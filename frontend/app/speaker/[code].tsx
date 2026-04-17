@@ -42,6 +42,9 @@ export default function SpeakerScreen() {
   const recordingRef = useRef(false);
   const lastSinceRef = useRef<string | null>(null);
   const pollRef = useRef<any>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsReconnectRef = useRef<any>(null);
+  const [wsOk, setWsOk] = useState(false);
 
   const projectorUrl =
     typeof window !== "undefined"
@@ -72,11 +75,72 @@ export default function SpeakerScreen() {
 
   useEffect(() => {
     fetchPhrases();
-    pollRef.current = setInterval(fetchPhrases, 1500);
+    pollRef.current = setInterval(() => {
+      if (!wsOk) fetchPhrases();
+    }, 2500);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [fetchPhrases]);
+  }, [fetchPhrases, wsOk]);
+
+  // WebSocket realtime for speaker's own transcript
+  useEffect(() => {
+    if (!sessionCode) return;
+    let closed = false;
+
+    const appendOne = (p: Phrase) => {
+      setPhrases((prev) => {
+        if (prev.some((x) => x.id === p.id)) return prev;
+        lastSinceRef.current = p.created_at;
+        return [...prev, p];
+      });
+    };
+
+    const connect = () => {
+      if (closed) return;
+      try {
+        const wsUrl =
+          BACKEND_URL.replace(/^http/, "ws") + `/api/sessions/${sessionCode}/ws`;
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+        ws.onopen = () => setWsOk(true);
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === "phrase" && msg.phrase) appendOne(msg.phrase as Phrase);
+            else if (msg.type === "clear") {
+              setPhrases([]);
+              lastSinceRef.current = null;
+            }
+          } catch {}
+        };
+        ws.onclose = () => {
+          setWsOk(false);
+          if (!closed) {
+            if (wsReconnectRef.current) clearTimeout(wsReconnectRef.current);
+            wsReconnectRef.current = setTimeout(connect, 2000);
+          }
+        };
+        ws.onerror = () => {
+          try {
+            ws.close();
+          } catch {}
+        };
+      } catch {
+        if (!closed) wsReconnectRef.current = setTimeout(connect, 2500);
+      }
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      if (wsReconnectRef.current) clearTimeout(wsReconnectRef.current);
+      try {
+        wsRef.current?.close();
+      } catch {}
+      wsRef.current = null;
+    };
+  }, [sessionCode]);
 
   useEffect(() => {
     return () => {
@@ -325,6 +389,15 @@ const styles = StyleSheet.create({
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#52525B" },
   dotActive: { backgroundColor: "#FF3333" },
   headerStatus: { color: "#FFFFFF", fontSize: 12, letterSpacing: 2, fontWeight: "700" },
+  wsDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#52525B",
+    marginLeft: 8,
+  },
+  wsDotOk: { backgroundColor: "#22C55E" },
+  wsLabel: { color: "#52525B", fontSize: 10, letterSpacing: 2, fontWeight: "700" },
   content: { padding: 20, paddingBottom: 280, gap: 20 },
   sessionBox: {
     backgroundColor: "#121212",

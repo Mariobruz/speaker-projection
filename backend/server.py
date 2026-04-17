@@ -1,16 +1,18 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+import asyncio
 import os
 import io
+import json
 import logging
 import random
 import string
 import uuid
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
 from datetime import datetime, timezone
 
 from emergentintegrations.llm.openai import OpenAISpeechToText
@@ -60,6 +62,43 @@ class TranscribeResponse(BaseModel):
     phrase: Optional[Phrase] = None
     skipped: bool = False
     reason: Optional[str] = None
+
+
+# ---------------- WebSocket Manager ----------------
+
+class ConnectionManager:
+    def __init__(self) -> None:
+        self.active: Dict[str, Set[WebSocket]] = {}
+        self.lock = asyncio.Lock()
+
+    async def connect(self, code: str, ws: WebSocket) -> None:
+        await ws.accept()
+        async with self.lock:
+            self.active.setdefault(code, set()).add(ws)
+
+    async def disconnect(self, code: str, ws: WebSocket) -> None:
+        async with self.lock:
+            conns = self.active.get(code)
+            if conns and ws in conns:
+                conns.remove(ws)
+            if conns is not None and not conns:
+                self.active.pop(code, None)
+
+    async def broadcast(self, code: str, payload: dict) -> None:
+        data = json.dumps(payload, default=str)
+        async with self.lock:
+            conns = list(self.active.get(code, set()))
+        dead: List[WebSocket] = []
+        for ws in conns:
+            try:
+                await ws.send_text(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            await self.disconnect(code, ws)
+
+
+manager = ConnectionManager()
 
 
 # ---------------- Helpers ----------------
@@ -184,6 +223,14 @@ async def transcribe_audio(code: str, audio: UploadFile = File(...)):
         created_at=datetime.now(timezone.utc),
     )
     await db.phrases.insert_one(phrase.model_dump())
+    # Broadcast to WebSocket listeners for this session
+    try:
+        await manager.broadcast(
+            code.upper(),
+            {"type": "phrase", "phrase": phrase.model_dump(mode="json")},
+        )
+    except Exception:
+        logger.exception("WS broadcast failed")
     return TranscribeResponse(phrase=phrase, skipped=False)
 
 
@@ -213,7 +260,33 @@ async def clear_session(code: str):
     if not session_doc:
         raise HTTPException(status_code=404, detail="Session not found")
     result = await db.phrases.delete_many({"session_id": session_doc["id"]})
+    try:
+        await manager.broadcast(code.upper(), {"type": "clear"})
+    except Exception:
+        logger.exception("WS broadcast failed")
     return {"deleted": result.deleted_count}
+
+
+@app.websocket("/api/sessions/{code}/ws")
+async def session_ws(websocket: WebSocket, code: str):
+    code_up = code.upper()
+    session_doc = await db.sessions.find_one({"code": code_up}, {"_id": 0})
+    if not session_doc:
+        await websocket.close(code=1008)
+        return
+    await manager.connect(code_up, websocket)
+    try:
+        # Send a hello so the client knows it's live
+        await websocket.send_text(json.dumps({"type": "hello", "code": code_up}))
+        while True:
+            # Keep connection alive; ignore client messages
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("WS error")
+    finally:
+        await manager.disconnect(code_up, websocket)
 
 
 # Include router and middleware
