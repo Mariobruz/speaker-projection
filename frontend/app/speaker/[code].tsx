@@ -495,8 +495,8 @@ export default function SpeakerScreen() {
             })}
           </View>
 
-          {/* Mic device selector (web only) */}
-          {IS_WEB && (
+          {/* Mic device selector (web) or OS hint (native) */}
+          {IS_WEB ? (
             <View style={styles.micSection}>
               <TouchableOpacity
                 onPress={async () => {
@@ -543,6 +543,31 @@ export default function SpeakerScreen() {
                   )}
                 </View>
               )}
+            </View>
+          ) : (
+            <View style={styles.micSection}>
+              <View style={[styles.micTrigger, { backgroundColor: "rgba(255,255,255,0.02)" }]}>
+                <Text style={styles.micTriggerTxt}>🎙  Microfono gestito dal sistema</Text>
+              </View>
+              <Text style={styles.micEmpty}>
+                Su iOS/Android è il sistema operativo a scegliere l&apos;ingresso audio.
+                Collega il mic USB o Bluetooth prima di registrare e lui verrà usato automaticamente.
+              </Text>
+              <TouchableOpacity
+                onPress={async () => {
+                  try {
+                    await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+                    setError(null);
+                    setStatus("Audio re-inizializzato.");
+                  } catch (e: any) {
+                    setError(`Errore: ${e?.message || e}`);
+                  }
+                }}
+                style={[styles.micTrigger, { marginTop: 4 }]}
+                testID="audio-reinit-btn"
+              >
+                <Text style={styles.micTriggerTxt}>🔄  Re-inizializza audio (dopo aver collegato BT/USB)</Text>
+              </TouchableOpacity>
             </View>
           )}
 
