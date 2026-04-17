@@ -12,6 +12,12 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import {
+  useAudioRecorder,
+  AudioModule,
+  setAudioModeAsync,
+  RecordingPresets,
+} from "expo-audio";
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL as string;
 
@@ -24,6 +30,7 @@ type Phrase = {
 };
 
 const CHUNK_MS = 5000;
+const IS_WEB = Platform.OS === "web";
 
 export default function SpeakerScreen() {
   const { code } = useLocalSearchParams<{ code: string }>();
@@ -36,10 +43,16 @@ export default function SpeakerScreen() {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(0);
 
+  // Web refs
   const mediaRecorderRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunkIntervalRef = useRef<any>(null);
   const recordingRef = useRef(false);
+
+  // Native recorder (expo-audio)
+  const nativeRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const nativeCycleTimer = useRef<any>(null);
+
   const lastSinceRef = useRef<string | null>(null);
   const pollRef = useRef<any>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -47,7 +60,7 @@ export default function SpeakerScreen() {
   const [wsOk, setWsOk] = useState(false);
 
   const projectorUrl =
-    typeof window !== "undefined"
+    typeof window !== "undefined" && window.location
       ? `${window.location.origin}/projector/${sessionCode}`
       : `${BACKEND_URL}/projector/${sessionCode}`;
 
@@ -55,7 +68,6 @@ export default function SpeakerScreen() {
     projectorUrl
   )}&size=220x220&bgcolor=0A0A0A&color=FFFFFF&qzone=2&margin=0`;
 
-  // Poll phrases for speaker's own view
   const fetchPhrases = useCallback(async () => {
     if (!sessionCode) return;
     try {
@@ -67,7 +79,11 @@ export default function SpeakerScreen() {
       const data = await res.json();
       const newPhrases: Phrase[] = data.phrases || [];
       if (newPhrases.length) {
-        setPhrases((prev) => [...prev, ...newPhrases]);
+        setPhrases((prev) => {
+          const seen = new Set(prev.map((p) => p.id));
+          const fresh = newPhrases.filter((p) => !seen.has(p.id));
+          return fresh.length ? [...prev, ...fresh] : prev;
+        });
         lastSinceRef.current = newPhrases[newPhrases.length - 1].created_at;
       }
     } catch {}
@@ -75,19 +91,13 @@ export default function SpeakerScreen() {
 
   useEffect(() => {
     fetchPhrases();
-    pollRef.current = setInterval(() => {
-      if (!wsOk) fetchPhrases();
-    }, 2500);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    pollRef.current = setInterval(() => { if (!wsOk) fetchPhrases(); }, 2500);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchPhrases, wsOk]);
 
-  // WebSocket realtime for speaker's own transcript
   useEffect(() => {
     if (!sessionCode) return;
     let closed = false;
-
     const appendOne = (p: Phrase) => {
       setPhrases((prev) => {
         if (prev.some((x) => x.id === p.id)) return prev;
@@ -95,12 +105,10 @@ export default function SpeakerScreen() {
         return [...prev, p];
       });
     };
-
     const connect = () => {
       if (closed) return;
       try {
-        const wsUrl =
-          BACKEND_URL.replace(/^http/, "ws") + `/api/sessions/${sessionCode}/ws`;
+        const wsUrl = BACKEND_URL.replace(/^http/, "ws") + `/api/sessions/${sessionCode}/ws`;
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
         ws.onopen = () => setWsOk(true);
@@ -121,53 +129,37 @@ export default function SpeakerScreen() {
             wsReconnectRef.current = setTimeout(connect, 2000);
           }
         };
-        ws.onerror = () => {
-          try {
-            ws.close();
-          } catch {}
-        };
+        ws.onerror = () => { try { ws.close(); } catch {} };
       } catch {
         if (!closed) wsReconnectRef.current = setTimeout(connect, 2500);
       }
     };
-
     connect();
     return () => {
       closed = true;
       if (wsReconnectRef.current) clearTimeout(wsReconnectRef.current);
-      try {
-        wsRef.current?.close();
-      } catch {}
+      try { wsRef.current?.close(); } catch {}
       wsRef.current = null;
     };
   }, [sessionCode]);
 
   useEffect(() => {
-    return () => {
-      stopRecording();
-    };
+    return () => { stopRecording(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const uploadBlob = async (blob: Blob) => {
-    if (!blob || blob.size < 2000) return;
+  const uploadFormData = async (fd: FormData) => {
     setUploading((n) => n + 1);
     try {
-      const fd = new FormData();
-      const filename = "chunk.webm";
-      // Web: append blob directly
-      (fd as any).append("audio", blob, filename);
       const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionCode}/transcribe`, {
         method: "POST",
-        body: fd,
+        body: fd as any,
       });
       if (!res.ok) {
         const txt = await res.text();
         console.error("Transcribe failed", res.status, txt);
         setError(`Errore trascrizione: HTTP ${res.status}`);
-        return;
       }
-      // Phrase will show up via polling
     } catch (e: any) {
       setError(`Errore di rete: ${e?.message || e}`);
     } finally {
@@ -175,7 +167,25 @@ export default function SpeakerScreen() {
     }
   };
 
-  const startRecorderCycle = (stream: MediaStream) => {
+  const uploadWebBlob = async (blob: Blob) => {
+    if (!blob || blob.size < 2000) return;
+    const fd = new FormData();
+    (fd as any).append("audio", blob, "chunk.webm");
+    await uploadFormData(fd);
+  };
+
+  const uploadNativeFile = async (uri: string) => {
+    if (!uri) return;
+    const fd = new FormData();
+    // React Native FormData accepts {uri, name, type}
+    const name = "chunk.m4a";
+    const type = "audio/m4a";
+    (fd as any).append("audio", { uri, name, type } as any);
+    await uploadFormData(fd);
+  };
+
+  // ---------- Web recording cycle ----------
+  const startWebRecorderCycle = (stream: MediaStream) => {
     if (typeof (window as any).MediaRecorder === "undefined") {
       setError("MediaRecorder non supportato in questo browser.");
       return;
@@ -189,10 +199,7 @@ export default function SpeakerScreen() {
     ];
     let mimeType = "";
     for (const m of mimeCandidates) {
-      if (MR.isTypeSupported && MR.isTypeSupported(m)) {
-        mimeType = m;
-        break;
-      }
+      if (MR.isTypeSupported && MR.isTypeSupported(m)) { mimeType = m; break; }
     }
     const rec = mimeType ? new MR(stream, { mimeType }) : new MR(stream);
     const localChunks: Blob[] = [];
@@ -201,36 +208,62 @@ export default function SpeakerScreen() {
     };
     rec.onstop = () => {
       const blob = new Blob(localChunks, { type: mimeType || "audio/webm" });
-      uploadBlob(blob);
-      if (recordingRef.current) {
-        // start next cycle
-        startRecorderCycle(stream);
-      }
+      uploadWebBlob(blob);
+      if (recordingRef.current) startWebRecorderCycle(stream);
     };
     rec.start();
     mediaRecorderRef.current = rec;
-
-    // Stop after CHUNK_MS to upload and loop
     chunkIntervalRef.current = setTimeout(() => {
+      try { if (rec.state !== "inactive") rec.stop(); } catch {}
+    }, CHUNK_MS);
+  };
+
+  // ---------- Native recording cycle (expo-audio) ----------
+  const startNativeCycle = async () => {
+    if (!recordingRef.current) return;
+    try {
+      await nativeRecorder.prepareToRecordAsync();
+      nativeRecorder.record();
+    } catch (e: any) {
+      setError(`Errore registrazione: ${e?.message || e}`);
+      recordingRef.current = false;
+      setRecording(false);
+      return;
+    }
+    nativeCycleTimer.current = setTimeout(async () => {
       try {
-        if (rec.state !== "inactive") rec.stop();
-      } catch {}
+        await nativeRecorder.stop();
+        const uri = nativeRecorder.uri;
+        if (uri) uploadNativeFile(uri);
+      } catch (e) {
+        console.error("native stop failed", e);
+      }
+      if (recordingRef.current) startNativeCycle();
     }, CHUNK_MS);
   };
 
   const startRecording = async () => {
     setError(null);
-    if (Platform.OS !== "web") {
-      setError("La registrazione audio è supportata solo nella versione web.");
-      return;
-    }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      recordingRef.current = true;
-      setRecording(true);
-      setStatus("In ascolto...");
-      startRecorderCycle(stream);
+      if (IS_WEB) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
+        recordingRef.current = true;
+        setRecording(true);
+        setStatus("In ascolto...");
+        startWebRecorderCycle(stream);
+      } else {
+        const perm = await AudioModule.requestRecordingPermissionsAsync();
+        if (!perm.granted) {
+          setError("Permesso microfono negato.");
+          return;
+        }
+        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+        recordingRef.current = true;
+        setRecording(true);
+        setStatus("In ascolto...");
+        startNativeCycle();
+      }
     } catch (e: any) {
       setError(`Permesso microfono negato: ${e?.message || e}`);
     }
@@ -244,20 +277,30 @@ export default function SpeakerScreen() {
       clearTimeout(chunkIntervalRef.current);
       chunkIntervalRef.current = null;
     }
+    if (nativeCycleTimer.current) {
+      clearTimeout(nativeCycleTimer.current);
+      nativeCycleTimer.current = null;
+    }
     try {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-        mediaRecorderRef.current.stop();
+      if (IS_WEB) {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+        }
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((t) => t.stop());
+          streamRef.current = null;
+        }
+      } else {
+        nativeRecorder.stop().then(() => {
+          const uri = nativeRecorder.uri;
+          if (uri) uploadNativeFile(uri);
+        }).catch(() => {});
       }
     } catch {}
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
   };
 
   const toggleRecording = () => {
-    if (recording) stopRecording();
-    else startRecording();
+    if (recording) stopRecording(); else startRecording();
   };
 
   const clearSession = async () => {
@@ -269,7 +312,7 @@ export default function SpeakerScreen() {
   };
 
   const openProjector = () => {
-    if (Platform.OS === "web" && typeof window !== "undefined") {
+    if (IS_WEB && typeof window !== "undefined") {
       window.open(projectorUrl, "_blank");
     } else {
       Linking.openURL(projectorUrl);
@@ -285,6 +328,8 @@ export default function SpeakerScreen() {
         <View style={{ flex: 1 }} />
         <View style={[styles.dot, recording && styles.dotActive]} />
         <Text style={styles.headerStatus}>{recording ? "LIVE" : "OFFLINE"}</Text>
+        <View style={[styles.wsDot, wsOk && styles.wsDotOk]} />
+        <Text style={styles.wsLabel}>{wsOk ? "WS" : "—"}</Text>
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
@@ -295,24 +340,15 @@ export default function SpeakerScreen() {
           </Text>
 
           <View style={styles.qrRow}>
-            <Image
-              source={{ uri: qrUrl }}
-              style={styles.qr}
-              testID="projector-qr"
-              resizeMode="contain"
-            />
+            <Image source={{ uri: qrUrl }} style={styles.qr} testID="projector-qr" resizeMode="contain" />
             <View style={{ flex: 1, marginLeft: 16 }}>
               <Text style={styles.qrHint}>
-                Inquadra il QR con il dispositivo del proiettore, oppure apri:
+                Inquadra il QR col dispositivo del proiettore, oppure apri:
               </Text>
               <Text style={styles.qrUrl} numberOfLines={2} selectable>
                 {projectorUrl}
               </Text>
-              <TouchableOpacity
-                style={styles.openBtn}
-                onPress={openProjector}
-                testID="open-projector-btn"
-              >
+              <TouchableOpacity style={styles.openBtn} onPress={openProjector} testID="open-projector-btn">
                 <Text style={styles.openBtnTxt}>APRI PROIETTORE →</Text>
               </TouchableOpacity>
             </View>
@@ -347,9 +383,7 @@ export default function SpeakerScreen() {
       <View style={styles.controls} pointerEvents="box-none">
         <View style={styles.controlInner}>
           {error && (
-            <Text style={styles.errorTxt} testID="speaker-error">
-              {error}
-            </Text>
+            <Text style={styles.errorTxt} testID="speaker-error">{error}</Text>
           )}
           <View style={styles.statusRow}>
             <Text style={styles.statusTxt}>{status}</Text>
@@ -389,13 +423,7 @@ const styles = StyleSheet.create({
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#52525B" },
   dotActive: { backgroundColor: "#FF3333" },
   headerStatus: { color: "#FFFFFF", fontSize: 12, letterSpacing: 2, fontWeight: "700" },
-  wsDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#52525B",
-    marginLeft: 8,
-  },
+  wsDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#52525B", marginLeft: 8 },
   wsDotOk: { backgroundColor: "#22C55E" },
   wsLabel: { color: "#52525B", fontSize: 10, letterSpacing: 2, fontWeight: "700" },
   content: { padding: 20, paddingBottom: 280, gap: 20 },
@@ -406,12 +434,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
   },
-  caption: {
-    color: "#52525B",
-    fontSize: 11,
-    letterSpacing: 3,
-    fontWeight: "700",
-  },
+  caption: { color: "#52525B", fontSize: 11, letterSpacing: 3, fontWeight: "700" },
   sessionCode: {
     color: "#FFFFFF",
     fontSize: 44,

@@ -56,7 +56,18 @@ class Phrase(BaseModel):
     session_id: str
     pt_text: str
     it_text: str
+    translations: Dict[str, str] = Field(default_factory=dict)
     created_at: datetime
+
+
+SUPPORTED_LANGS = {
+    "it": "Italian",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "pt": "Portuguese",
+}
 
 
 class PhrasesResponse(BaseModel):
@@ -114,12 +125,19 @@ def generate_code(length: int = 6) -> str:
 
 
 async def translate_pt_to_it(text: str) -> str:
+    return await translate_pt_to_lang(text, "it")
+
+
+async def translate_pt_to_lang(text: str, target_lang: str) -> str:
     if not text.strip():
         return ""
+    lang_name = SUPPORTED_LANGS.get(target_lang, "Italian")
+    if target_lang == "pt":
+        return text.strip()
     system_message = (
         "You are a professional real-time conference interpreter. "
-        "Translate the user's Portuguese text into natural, fluent Italian. "
-        "Output ONLY the Italian translation, without any explanation, quotes, or prefix. "
+        f"Translate the user's Portuguese text into natural, fluent {lang_name}. "
+        f"Output ONLY the {lang_name} translation, without any explanation, quotes, or prefix. "
         "Preserve punctuation and meaning. If the input is gibberish or silence, return an empty string."
     )
     async with httpx.AsyncClient(timeout=30.0) as hc:
@@ -276,8 +294,75 @@ async def get_phrases(code: str, since_iso: Optional[str] = None, limit: int = 1
 
     cursor = db.phrases.find(query, {"_id": 0}).sort("created_at", 1).limit(limit)
     docs = await cursor.to_list(length=limit)
-    phrases = [Phrase(**d) for d in docs]
+    phrases = []
+    for d in docs:
+        # Backfill translations dict if older phrase has only it_text
+        if not d.get("translations"):
+            d["translations"] = {
+                "it": d.get("it_text", ""),
+                "pt": d.get("pt_text", ""),
+            }
+        phrases.append(Phrase(**d))
     return PhrasesResponse(phrases=phrases)
+
+
+class TranslationResponse(BaseModel):
+    phrase_id: str
+    lang: str
+    text: str
+    cached: bool
+
+
+@api_router.post("/sessions/{code}/phrases/{phrase_id}/translate", response_model=TranslationResponse)
+async def translate_phrase(code: str, phrase_id: str, lang: str):
+    lang = (lang or "").lower().strip()
+    if lang not in SUPPORTED_LANGS:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {lang}")
+
+    session_doc = await db.sessions.find_one({"code": code.upper()}, {"_id": 0})
+    if not session_doc:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    phrase_doc = await db.phrases.find_one(
+        {"id": phrase_id, "session_id": session_doc["id"]}, {"_id": 0}
+    )
+    if not phrase_doc:
+        raise HTTPException(status_code=404, detail="Phrase not found")
+
+    translations = phrase_doc.get("translations") or {}
+    # Backfill legacy phrases
+    if "it" not in translations and phrase_doc.get("it_text"):
+        translations["it"] = phrase_doc["it_text"]
+    if "pt" not in translations and phrase_doc.get("pt_text"):
+        translations["pt"] = phrase_doc["pt_text"]
+
+    if lang in translations and translations[lang]:
+        return TranslationResponse(
+            phrase_id=phrase_id, lang=lang, text=translations[lang], cached=True
+        )
+
+    try:
+        text = await translate_pt_to_lang(phrase_doc["pt_text"], lang)
+    except Exception as e:
+        logger.exception("Translation failed")
+        raise HTTPException(status_code=500, detail=f"Translation failed: {e}")
+
+    translations[lang] = text
+    await db.phrases.update_one(
+        {"id": phrase_id, "session_id": session_doc["id"]},
+        {"$set": {"translations": translations}},
+    )
+
+    # Broadcast to WS clients so other projectors get it instantly
+    try:
+        await manager.broadcast(
+            code.upper(),
+            {"type": "translation", "phrase_id": phrase_id, "lang": lang, "text": text},
+        )
+    except Exception:
+        logger.exception("WS broadcast failed")
+
+    return TranslationResponse(phrase_id=phrase_id, lang=lang, text=text, cached=False)
 
 
 @api_router.post("/sessions/{code}/clear")

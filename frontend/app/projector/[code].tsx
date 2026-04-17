@@ -17,6 +17,7 @@ type Phrase = {
   session_id: string;
   pt_text: string;
   it_text: string;
+  translations?: Record<string, string>;
   created_at: string;
 };
 
@@ -57,6 +58,16 @@ const THEMES: Record<Theme, {
 const FONT_SCALES = [0.7, 0.85, 1.0, 1.2, 1.4, 1.65, 1.9];
 const DEFAULT_SCALE_INDEX = 2;
 
+type Lang = "it" | "en" | "es" | "fr" | "de" | "pt";
+const LANGS: { code: Lang; label: string; flag: string }[] = [
+  { code: "it", label: "IT", flag: "🇮🇹" },
+  { code: "en", label: "EN", flag: "🇬🇧" },
+  { code: "es", label: "ES", flag: "🇪🇸" },
+  { code: "fr", label: "FR", flag: "🇫🇷" },
+  { code: "de", label: "DE", flag: "🇩🇪" },
+  { code: "pt", label: "PT", flag: "🇵🇹" },
+];
+
 const storageGet = (k: string): string | null => {
   if (Platform.OS === "web" && typeof window !== "undefined") {
     try {
@@ -93,6 +104,11 @@ export default function ProjectorScreen() {
     if (!Number.isNaN(n) && n >= 0 && n < FONT_SCALES.length) return n;
     return DEFAULT_SCALE_INDEX;
   });
+  const [targetLang, setTargetLang] = useState<Lang>(() => {
+    const saved = storageGet("vi.lang");
+    if (saved && ["it", "en", "es", "fr", "de", "pt"].includes(saved)) return saved as Lang;
+    return "it";
+  });
   const [wsOk, setWsOk] = useState(false);
 
   const lastSinceRef = useRef<string | null>(null);
@@ -100,16 +116,14 @@ export default function ProjectorScreen() {
   const hideTimer = useRef<any>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<any>(null);
+  const loadingRef = useRef<Set<string>>(new Set());
 
   const t = THEMES[theme];
   const scale = FONT_SCALES[scaleIndex];
 
-  useEffect(() => {
-    storageSet("vi.theme", theme);
-  }, [theme]);
-  useEffect(() => {
-    storageSet("vi.scaleIdx", String(scaleIndex));
-  }, [scaleIndex]);
+  useEffect(() => { storageSet("vi.theme", theme); }, [theme]);
+  useEffect(() => { storageSet("vi.scaleIdx", String(scaleIndex)); }, [scaleIndex]);
+  useEffect(() => { storageSet("vi.lang", targetLang); }, [targetLang]);
 
   const touchReveal = () => {
     setShowHeader(true);
@@ -138,6 +152,50 @@ export default function ProjectorScreen() {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
   }, []);
 
+  const requestTranslation = useCallback(
+    async (phraseId: string, lang: Lang) => {
+      const key = `${phraseId}|${lang}`;
+      if (loadingRef.current.has(key)) return;
+      loadingRef.current.add(key);
+      try {
+        const res = await fetch(
+          `${BACKEND_URL}/api/sessions/${sessionCode}/phrases/${phraseId}/translate?lang=${lang}`,
+          { method: "POST" }
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && data.text) {
+          setPhrases((prev) =>
+            prev.map((p) =>
+              p.id === phraseId
+                ? {
+                    ...p,
+                    translations: { ...(p.translations || {}), [lang]: data.text },
+                  }
+                : p
+            )
+          );
+        }
+      } catch {
+      } finally {
+        loadingRef.current.delete(key);
+      }
+    },
+    [sessionCode]
+  );
+
+  // Whenever target lang or phrases change, request missing translations
+  useEffect(() => {
+    for (const p of phrases) {
+      const translations = p.translations || {};
+      if (targetLang === "it" && p.it_text) continue;
+      if (targetLang === "pt" && p.pt_text) continue;
+      if (!translations[targetLang]) {
+        requestTranslation(p.id, targetLang);
+      }
+    }
+  }, [phrases, targetLang, requestTranslation]);
+
   const fetchPhrases = useCallback(
     async (initial = false) => {
       if (!sessionCode) return;
@@ -161,12 +219,9 @@ export default function ProjectorScreen() {
     [sessionCode, appendPhrases]
   );
 
-  // Initial load + fallback polling
   useEffect(() => {
     fetchPhrases(true);
-    const id = setInterval(() => {
-      if (!wsOk) fetchPhrases();
-    }, 2500);
+    const id = setInterval(() => { if (!wsOk) fetchPhrases(); }, 2500);
     return () => clearInterval(id);
   }, [fetchPhrases, wsOk]);
 
@@ -190,6 +245,17 @@ export default function ProjectorScreen() {
             } else if (msg.type === "clear") {
               setPhrases([]);
               lastSinceRef.current = null;
+            } else if (msg.type === "translation" && msg.phrase_id && msg.lang && msg.text) {
+              setPhrases((prev) =>
+                prev.map((p) =>
+                  p.id === msg.phrase_id
+                    ? {
+                        ...p,
+                        translations: { ...(p.translations || {}), [msg.lang]: msg.text },
+                      }
+                    : p
+                )
+              );
             }
           } catch {}
         };
@@ -200,15 +266,9 @@ export default function ProjectorScreen() {
             reconnectTimer.current = setTimeout(connect, 2000);
           }
         };
-        ws.onerror = () => {
-          try {
-            ws.close();
-          } catch {}
-        };
+        ws.onerror = () => { try { ws.close(); } catch {} };
       } catch {
-        if (!closed) {
-          reconnectTimer.current = setTimeout(connect, 2500);
-        }
+        if (!closed) reconnectTimer.current = setTimeout(connect, 2500);
       }
     };
 
@@ -216,12 +276,16 @@ export default function ProjectorScreen() {
     return () => {
       closed = true;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      try {
-        wsRef.current?.close();
-      } catch {}
+      try { wsRef.current?.close(); } catch {}
       wsRef.current = null;
     };
   }, [sessionCode, appendPhrases]);
+
+  const getPhraseText = (p: Phrase): string => {
+    if (targetLang === "it") return p.translations?.it || p.it_text || "";
+    if (targetLang === "pt") return p.translations?.pt || p.pt_text || "";
+    return p.translations?.[targetLang] || "";
+  };
 
   const { width } = Dimensions.get("window");
   const hugeBase = Math.max(36, Math.min(140, width * 0.055));
@@ -252,9 +316,29 @@ export default function ProjectorScreen() {
             <Text style={[styles.exitTxt, { color: t.text }]}>← ESCI</Text>
           </TouchableOpacity>
 
+          <View style={styles.langRow} pointerEvents="auto">
+            {LANGS.map((L) => {
+              const active = L.code === targetLang;
+              return (
+                <TouchableOpacity
+                  key={L.code}
+                  onPress={() => setTargetLang(L.code)}
+                  style={[
+                    styles.langPill,
+                    { borderColor: active ? t.accent : t.border, backgroundColor: active ? t.accentSoft : t.surface },
+                  ]}
+                  testID={`lang-pill-${L.code}`}
+                >
+                  <Text style={[styles.langPillTxt, { color: active ? t.accent : t.text }]}>
+                    {L.flag} {L.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
           <View style={{ flex: 1 }} />
 
-          {/* Controls */}
           <View style={styles.controlsRow} pointerEvents="auto">
             <TouchableOpacity
               onPress={zoomOut}
@@ -291,12 +375,7 @@ export default function ProjectorScreen() {
           </View>
 
           <View style={[styles.badge, { backgroundColor: t.accentSoft, borderColor: t.accent }]}>
-            <View
-              style={[
-                styles.livePulse,
-                { backgroundColor: wsOk ? "#22C55E" : t.accent },
-              ]}
-            />
+            <View style={[styles.livePulse, { backgroundColor: wsOk ? "#22C55E" : t.accent }]} />
             <Text style={[styles.badgeTxt, { color: t.accent }]}>
               {wsOk ? "LIVE" : "SYNC"} · {sessionCode}
             </Text>
@@ -307,7 +386,7 @@ export default function ProjectorScreen() {
       <View style={styles.captionBar} pointerEvents="none">
         <View style={[styles.captionBorder, { backgroundColor: t.accent }]} />
         <Text style={[styles.captionTxt, { color: t.muted }]}>
-          TRADUZIONE IN TEMPO REALE · PT → IT
+          TRADUZIONE IN TEMPO REALE · PT → {targetLang.toUpperCase()}
         </Text>
       </View>
 
@@ -330,19 +409,19 @@ export default function ProjectorScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {older.map((p) => (
-            <View key={p.id} style={[styles.olderBlock, { borderLeftColor: t.border }]}>
-              <Text
-                style={[styles.olderPt, { fontSize: small, color: t.sub }]}
-                numberOfLines={2}
-              >
-                {p.pt_text}
-              </Text>
-              <Text style={[styles.olderIt, { fontSize: huge * 0.42, color: t.text }]}>
-                {p.it_text}
-              </Text>
-            </View>
-          ))}
+          {older.map((p) => {
+            const txt = getPhraseText(p);
+            return (
+              <View key={p.id} style={[styles.olderBlock, { borderLeftColor: t.border }]}>
+                <Text style={[styles.olderPt, { fontSize: small, color: t.sub }]} numberOfLines={2}>
+                  {p.pt_text}
+                </Text>
+                <Text style={[styles.olderIt, { fontSize: huge * 0.42, color: t.text }]}>
+                  {txt || "…"}
+                </Text>
+              </View>
+            );
+          })}
 
           {current && (
             <View
@@ -353,7 +432,7 @@ export default function ProjectorScreen() {
                 {current.pt_text}
               </Text>
               <Text style={[styles.currentIt, { fontSize: huge, color: t.text }]}>
-                {current.it_text}
+                {getPhraseText(current) || "…"}
               </Text>
             </View>
           )}
@@ -378,13 +457,16 @@ const styles = StyleSheet.create({
     gap: 12,
     flexWrap: "wrap",
   },
-  exitBtn: {
+  exitBtn: { borderWidth: 1, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 4 },
+  exitTxt: { fontSize: 12, fontWeight: "800", letterSpacing: 2 },
+  langRow: { flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap" },
+  langPill: {
     borderWidth: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     borderRadius: 4,
   },
-  exitTxt: { fontSize: 12, fontWeight: "800", letterSpacing: 2 },
+  langPillTxt: { fontSize: 12, fontWeight: "800", letterSpacing: 1 },
   controlsRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   ctrlBtn: {
     borderWidth: 1,
