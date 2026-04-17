@@ -24,9 +24,11 @@ Web app for conference/event interpretation. A Portuguese speaker talks into the
 - POST /api/sessions/{code}/clear - clear phrases
 
 ## Integrations
-- OpenAI Whisper-1 via emergentintegrations (STT, language=pt)
-- OpenAI gpt-4o-mini via emergentintegrations LlmChat (translation)
-- EMERGENT_LLM_KEY used for both
+- **Groq Cloud** (free tier) — OpenAI-compatible endpoints
+  - STT: `whisper-large-v3-turbo` (Portuguese) via `/audio/transcriptions`
+  - Translation: `llama-3.3-70b-versatile` via `/chat/completions`
+- API key stored as `GROQ_API_KEY` in `/app/backend/.env`
+- Legacy Emergent LLM Key kept in `.env` but no longer used by default
 
 ## Known Constraints
 - Microphone capture requires the web platform (MediaRecorder API); native Expo builds don't record yet
