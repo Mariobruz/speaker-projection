@@ -88,6 +88,7 @@ export default function SpeakerScreen() {
   const [devices, setDevices] = useState<{ id: string; label: string }[]>([]);
   const [selectedMicId, setSelectedMicId] = useState<string>(() => storageGet("vi.micId") || "");
   const [showMicList, setShowMicList] = useState(false);
+  const [micPermGranted, setMicPermGranted] = useState(false);
 
   // Output language (speaker preview)
   const [targetLang, setTargetLang] = useState<Lang>(() => {
@@ -108,11 +109,39 @@ export default function SpeakerScreen() {
         .filter((d) => d.kind === "audioinput")
         .map((d, i) => ({ id: d.deviceId, label: d.label || `Microfono ${i + 1}` }));
       setDevices(inputs);
+      // Consider permission granted if at least one device has a non-generic label
+      const hasLabels = inputs.some((d) => !/^Microfono \d+$/.test(d.label));
+      if (hasLabels) setMicPermGranted(true);
       if (selectedMicId && !inputs.some((d) => d.id === selectedMicId)) {
         setSelectedMicId("");
       }
     } catch {}
   }, [selectedMicId]);
+
+  const ensurePermissionAndEnumerate = useCallback(async () => {
+    if (!IS_WEB) return;
+    try {
+      // Check current permission state (without prompting) if API available
+      const anyNav: any = navigator;
+      if (anyNav.permissions?.query) {
+        try {
+          const pstate = await anyNav.permissions.query({ name: "microphone" as any });
+          if (pstate.state === "granted") {
+            setMicPermGranted(true);
+            await refreshDevices();
+            return;
+          }
+        } catch {}
+      }
+      // Request permission by opening a tiny stream, then close immediately
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      setMicPermGranted(true);
+      await refreshDevices();
+    } catch (e: any) {
+      setError(`Permesso microfono negato: ${e?.message || e}`);
+    }
+  }, [refreshDevices]);
 
   useEffect(() => {
     refreshDevices();
