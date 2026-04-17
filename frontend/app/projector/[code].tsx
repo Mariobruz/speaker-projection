@@ -11,8 +11,7 @@ import {
   Dimensions,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL as string;
+import { BACKEND_URL } from "../../src/config";
 
 type Phrase = {
   id: string;

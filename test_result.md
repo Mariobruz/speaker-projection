@@ -101,3 +101,34 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Web app per speaker portoghese con proiezione traduzione italiana in tempo reale. Deploy su Vercel + Emergent."
+
+frontend:
+  - task: "Vercel deployment — backend URL resolver"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/config.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Creato helper src/config.ts che forza il backend production (speaker-projection.emergent.host) quando l'app gira su dominio *.vercel.app. Risolve problema Vercel che non applicava correttamente EXPO_PUBLIC_BACKEND_URL al build Expo, mantenendo preview URL hardcoded nel bundle. Fallback a process.env.EXPO_PUBLIC_BACKEND_URL per dev/mobile. Aggiornati index.tsx, speaker/[code].tsx, projector/[code].tsx. Lint pulito, preview locale OK (200). Pending user: push su GitHub + redeploy Vercel."
+
+metadata:
+  created_by: "main_agent"
+  last_updated: "2026-04-17"
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Vercel deployment — backend URL resolver"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: "Implementato fix definitivo per il deploy Vercel. Vercel stava serendo un bundle con preview.emergentagent.com hardcoded nonostante EXPO_PUBLIC_BACKEND_URL fosse configurato in dashboard. Soluzione: runtime check del window.location.hostname che forza il backend production su domini vercel.app. In attesa del push utente + redeploy senza cache."

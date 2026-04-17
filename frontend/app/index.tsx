@@ -13,8 +13,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
-
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL as string;
+import { BACKEND_URL } from "../src/config";
 
 export default function Home() {
   const router = useRouter();

@@ -19,8 +19,7 @@ import {
   setAudioModeAsync,
   RecordingPresets,
 } from "expo-audio";
-
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL as string;
+import { BACKEND_URL } from "../../src/config";
 
 type Phrase = {
   id: string;
