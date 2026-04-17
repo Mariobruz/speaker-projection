@@ -9,6 +9,7 @@ import {
   Platform,
   Linking,
   Image,
+  TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -165,6 +166,81 @@ export default function SpeakerScreen() {
   const getPhraseSourceText = (p: Phrase): string => {
     const src = (p.source_lang || "pt").toLowerCase();
     return p.translations?.[src] || p.pt_text || "";
+  };
+  // Session info (speaker name + logo) editable from speaker view
+  const [session, setSession] = useState<{ speaker_name: string; logo_base64: string } | null>(null);
+  const [speakerNameInput, setSpeakerNameInput] = useState("");
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  const fetchSessionInfo = useCallback(async () => {
+    if (!sessionCode) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionCode}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSession({ speaker_name: data.speaker_name || "", logo_base64: data.logo_base64 || "" });
+        setSpeakerNameInput(data.speaker_name || "");
+      }
+    } catch {}
+  }, [sessionCode]);
+
+  useEffect(() => { fetchSessionInfo(); }, [fetchSessionInfo]);
+
+  const saveSpeakerName = async () => {
+    setSavingSettings(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ speaker_name: speakerNameInput }),
+      });
+      if (res.ok) await fetchSessionInfo();
+    } catch {} finally { setSavingSettings(false); }
+  };
+
+  const pickAndUploadLogo = () => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = (e: any) => {
+      const file = e.target?.files?.[0];
+      if (!file) return;
+      if (file.size > 1_500_000) {
+        setError("Logo troppo grande (max 1.5MB).");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const dataUrl = reader.result as string;
+        setSavingSettings(true);
+        try {
+          const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionCode}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ logo_base64: dataUrl }),
+          });
+          if (res.ok) await fetchSessionInfo();
+          else setError("Errore upload logo");
+        } catch (err: any) {
+          setError(`Errore upload logo: ${err?.message || err}`);
+        } finally { setSavingSettings(false); }
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  };
+
+  const removeLogo = async () => {
+    setSavingSettings(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ logo_base64: "" }),
+      });
+      if (res.ok) await fetchSessionInfo();
+    } catch {} finally { setSavingSettings(false); }
   };
 
   const projectorUrl =
@@ -452,6 +528,53 @@ export default function SpeakerScreen() {
             {sessionCode}
           </Text>
 
+          <View style={styles.settingsRow}>
+            <View style={{ flex: 1, gap: 6 }}>
+              <Text style={styles.settingLabel}>NOME SPEAKER</Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <TextInput
+                  style={styles.input}
+                  value={speakerNameInput}
+                  onChangeText={setSpeakerNameInput}
+                  placeholder="Es. João Silva"
+                  placeholderTextColor="#52525B"
+                  maxLength={80}
+                  testID="speaker-name-input"
+                />
+                <TouchableOpacity
+                  onPress={saveSpeakerName}
+                  style={styles.saveBtn}
+                  disabled={savingSettings}
+                  testID="save-speaker-name-btn"
+                >
+                  <Text style={styles.saveBtnTxt}>{savingSettings ? "…" : "SALVA"}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+            <View style={{ width: 140, gap: 6 }}>
+              <Text style={styles.settingLabel}>LOGO EVENTO</Text>
+              {session?.logo_base64 ? (
+                <View style={{ alignItems: "center", gap: 4 }}>
+                  <Image source={{ uri: session.logo_base64 }} style={styles.logoPreview} resizeMode="contain" />
+                  <TouchableOpacity onPress={removeLogo} testID="logo-remove-btn">
+                    <Text style={styles.logoRemoveTxt}>RIMUOVI</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  onPress={pickAndUploadLogo}
+                  style={styles.logoPicker}
+                  disabled={savingSettings || Platform.OS !== "web"}
+                  testID="logo-pick-btn"
+                >
+                  <Text style={styles.logoPickerTxt}>
+                    {Platform.OS === "web" ? "+ CARICA\nIMMAGINE" : "Solo web"}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
           <View style={styles.qrRow}>
             <Image source={{ uri: qrUrl }} style={styles.qr} testID="projector-qr" resizeMode="contain" />
             <View style={{ flex: 1, marginLeft: 16 }}>
@@ -738,6 +861,60 @@ const styles = StyleSheet.create({
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
   },
   micEmpty: { color: "#52525B", fontSize: 11, fontStyle: "italic", padding: 8 },
+  settingsRow: {
+    flexDirection: "row",
+    gap: 16,
+    marginBottom: 20,
+    alignItems: "flex-start",
+  },
+  settingLabel: { color: "#52525B", fontSize: 10, letterSpacing: 2, fontWeight: "800" },
+  input: {
+    flex: 1,
+    backgroundColor: "#050505",
+    borderColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    borderRadius: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  saveBtn: {
+    borderColor: "#FF3333",
+    borderWidth: 1,
+    backgroundColor: "rgba(255,51,51,0.12)",
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  saveBtnTxt: { color: "#FF3333", fontSize: 11, fontWeight: "800", letterSpacing: 2 },
+  logoPicker: {
+    borderColor: "rgba(255,255,255,0.2)",
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderRadius: 4,
+    height: 90,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.02)",
+  },
+  logoPickerTxt: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textAlign: "center",
+  },
+  logoPreview: {
+    width: 120,
+    height: 80,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 4,
+  },
+  logoRemoveTxt: { color: "#FF3333", fontSize: 10, fontWeight: "800", letterSpacing: 2 },
   controls: {
     position: "absolute",
     left: 0,

@@ -3,10 +3,12 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   TouchableOpacity,
-  Dimensions,
   Platform,
+  Animated,
+  Easing,
+  Image,
+  Dimensions,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
@@ -22,42 +24,12 @@ type Phrase = {
   created_at: string;
 };
 
-type Theme = "dark" | "light";
-
-const THEMES: Record<Theme, {
-  bg: string;
-  surface: string;
-  text: string;
-  sub: string;
-  muted: string;
-  accent: string;
-  accentSoft: string;
-  border: string;
-}> = {
-  dark: {
-    bg: "#050505",
-    surface: "rgba(255,255,255,0.04)",
-    text: "#FFFFFF",
-    sub: "#A1A1AA",
-    muted: "#52525B",
-    accent: "#FF3333",
-    accentSoft: "rgba(255,51,51,0.12)",
-    border: "rgba(255,255,255,0.12)",
-  },
-  light: {
-    bg: "#FAFAF7",
-    surface: "rgba(0,0,0,0.03)",
-    text: "#0A0A0A",
-    sub: "#3F3F46",
-    muted: "#71717A",
-    accent: "#E11D48",
-    accentSoft: "rgba(225,29,72,0.08)",
-    border: "rgba(0,0,0,0.12)",
-  },
+type SessionInfo = {
+  id: string;
+  code: string;
+  speaker_name: string;
+  logo_base64: string;
 };
-
-const FONT_SCALES = [0.7, 0.85, 1.0, 1.2, 1.4, 1.65, 1.9];
-const DEFAULT_SCALE_INDEX = 2;
 
 type Lang = "it" | "en" | "es" | "fr" | "de" | "pt";
 const LANGS: { code: Lang; label: string; flag: string }[] = [
@@ -69,22 +41,18 @@ const LANGS: { code: Lang; label: string; flag: string }[] = [
   { code: "pt", label: "PT", flag: "🇵🇹" },
 ];
 
+const FONT_SCALES = [0.6, 0.8, 1.0, 1.2, 1.5, 1.8, 2.2];
+const DEFAULT_SCALE_INDEX = 2;
+
 const storageGet = (k: string): string | null => {
   if (Platform.OS === "web" && typeof window !== "undefined") {
-    try {
-      return window.localStorage.getItem(k);
-    } catch {
-      return null;
-    }
+    try { return window.localStorage.getItem(k); } catch { return null; }
   }
   return null;
 };
-
 const storageSet = (k: string, v: string) => {
   if (Platform.OS === "web" && typeof window !== "undefined") {
-    try {
-      window.localStorage.setItem(k, v);
-    } catch {}
+    try { window.localStorage.setItem(k, v); } catch {}
   }
 };
 
@@ -94,51 +62,54 @@ export default function ProjectorScreen() {
   const sessionCode = (code || "").toString().toUpperCase();
 
   const [phrases, setPhrases] = useState<Phrase[]>([]);
+  const [session, setSession] = useState<SessionInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showHeader, setShowHeader] = useState(true);
-  const [theme, setTheme] = useState<Theme>(() =>
-    (storageGet("vi.theme") as Theme) === "light" ? "light" : "dark"
-  );
   const [scaleIndex, setScaleIndex] = useState<number>(() => {
-    const saved = storageGet("vi.scaleIdx");
-    const n = saved ? parseInt(saved, 10) : NaN;
-    if (!Number.isNaN(n) && n >= 0 && n < FONT_SCALES.length) return n;
-    return DEFAULT_SCALE_INDEX;
+    const s = storageGet("vi.scaleIdx");
+    const n = s ? parseInt(s, 10) : NaN;
+    return !Number.isNaN(n) && n >= 0 && n < FONT_SCALES.length ? n : DEFAULT_SCALE_INDEX;
   });
   const [targetLang, setTargetLang] = useState<Lang>(() => {
-    const saved = storageGet("vi.lang");
-    if (saved && ["it", "en", "es", "fr", "de", "pt"].includes(saved)) return saved as Lang;
+    const s = storageGet("vi.lang");
+    if (s && ["it","en","es","fr","de","pt"].includes(s)) return s as Lang;
     return "it";
   });
   const [wsOk, setWsOk] = useState(false);
 
   const lastSinceRef = useRef<string | null>(null);
-  const scrollRef = useRef<ScrollView>(null);
   const hideTimer = useRef<any>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<any>(null);
   const loadingRef = useRef<Set<string>>(new Set());
 
-  const t = THEMES[theme];
   const scale = FONT_SCALES[scaleIndex];
 
-  useEffect(() => { storageSet("vi.theme", theme); }, [theme]);
   useEffect(() => { storageSet("vi.scaleIdx", String(scaleIndex)); }, [scaleIndex]);
   useEffect(() => { storageSet("vi.lang", targetLang); }, [targetLang]);
 
   const touchReveal = () => {
     setShowHeader(true);
     if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => setShowHeader(false), 3500);
+    hideTimer.current = setTimeout(() => setShowHeader(false), 4500);
   };
 
   useEffect(() => {
     touchReveal();
-    return () => {
-      if (hideTimer.current) clearTimeout(hideTimer.current);
-    };
+    return () => { if (hideTimer.current) clearTimeout(hideTimer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Fetch session info (name + logo)
+  const fetchSession = useCallback(async () => {
+    if (!sessionCode) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionCode}`);
+      if (res.ok) setSession(await res.json());
+    } catch {}
+  }, [sessionCode]);
+
+  useEffect(() => { fetchSession(); }, [fetchSession]);
 
   const appendPhrases = useCallback((newPhrases: Phrase[]) => {
     if (!newPhrases.length) return;
@@ -146,11 +117,9 @@ export default function ProjectorScreen() {
       const seen = new Set(prev.map((p) => p.id));
       const fresh = newPhrases.filter((p) => !seen.has(p.id));
       if (!fresh.length) return prev;
-      const merged = [...prev, ...fresh].slice(-80);
-      return merged;
+      return [...prev, ...fresh].slice(-40);
     });
     lastSinceRef.current = newPhrases[newPhrases.length - 1].created_at;
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
   }, []);
 
   const requestTranslation = useCallback(
@@ -169,69 +138,54 @@ export default function ProjectorScreen() {
           setPhrases((prev) =>
             prev.map((p) =>
               p.id === phraseId
-                ? {
-                    ...p,
-                    translations: { ...(p.translations || {}), [lang]: data.text },
-                  }
+                ? { ...p, translations: { ...(p.translations || {}), [lang]: data.text } }
                 : p
             )
           );
         }
-      } catch {
-      } finally {
+      } catch {} finally {
         loadingRef.current.delete(key);
       }
     },
     [sessionCode]
   );
 
-  // Whenever target lang or phrases change, request missing translations
   useEffect(() => {
     for (const p of phrases) {
-      const translations = p.translations || {};
       const src = (p.source_lang || "pt").toLowerCase();
       if (targetLang === src) continue;
-      if (targetLang === "it" && p.it_text) continue;
-      if (!translations[targetLang]) {
-        requestTranslation(p.id, targetLang);
-      }
+      const t = p.translations || {};
+      if (!t[targetLang]) requestTranslation(p.id, targetLang);
     }
   }, [phrases, targetLang, requestTranslation]);
 
-  const fetchPhrases = useCallback(
-    async (initial = false) => {
-      if (!sessionCode) return;
-      try {
-        const qs = lastSinceRef.current
-          ? `?since_iso=${encodeURIComponent(lastSinceRef.current)}`
-          : "";
-        const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionCode}/phrases${qs}`);
-        if (!res.ok) {
-          if (res.status === 404) setError("Sessione non trovata");
-          return;
-        }
-        setError(null);
-        const data = await res.json();
-        appendPhrases(data.phrases || []);
-        if (initial) {
-          setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 120);
-        }
-      } catch {}
-    },
-    [sessionCode, appendPhrases]
-  );
+  const fetchPhrases = useCallback(async () => {
+    if (!sessionCode) return;
+    try {
+      const qs = lastSinceRef.current
+        ? `?since_iso=${encodeURIComponent(lastSinceRef.current)}`
+        : "";
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionCode}/phrases${qs}`);
+      if (!res.ok) {
+        if (res.status === 404) setError("Sessione non trovata");
+        return;
+      }
+      setError(null);
+      const data = await res.json();
+      appendPhrases(data.phrases || []);
+    } catch {}
+  }, [sessionCode, appendPhrases]);
 
   useEffect(() => {
-    fetchPhrases(true);
+    fetchPhrases();
     const id = setInterval(() => { if (!wsOk) fetchPhrases(); }, 2500);
     return () => clearInterval(id);
   }, [fetchPhrases, wsOk]);
 
-  // WebSocket realtime
+  // WebSocket
   useEffect(() => {
     if (!sessionCode) return;
     let closed = false;
-
     const connect = () => {
       if (closed) return;
       try {
@@ -251,13 +205,12 @@ export default function ProjectorScreen() {
               setPhrases((prev) =>
                 prev.map((p) =>
                   p.id === msg.phrase_id
-                    ? {
-                        ...p,
-                        translations: { ...(p.translations || {}), [msg.lang]: msg.text },
-                      }
+                    ? { ...p, translations: { ...(p.translations || {}), [msg.lang]: msg.text } }
                     : p
                 )
               );
+            } else if (msg.type === "session_update") {
+              fetchSession();
             }
           } catch {}
         };
@@ -273,7 +226,6 @@ export default function ProjectorScreen() {
         if (!closed) reconnectTimer.current = setTimeout(connect, 2500);
       }
     };
-
     connect();
     return () => {
       closed = true;
@@ -281,47 +233,103 @@ export default function ProjectorScreen() {
       try { wsRef.current?.close(); } catch {}
       wsRef.current = null;
     };
-  }, [sessionCode, appendPhrases]);
+  }, [sessionCode, appendPhrases, fetchSession]);
 
   const getPhraseText = (p: Phrase): string => {
     const src = (p.source_lang || "pt").toLowerCase();
-    if (targetLang === "it") return p.translations?.it || p.it_text || "";
     if (targetLang === src) return p.translations?.[src] || p.pt_text || "";
+    if (targetLang === "it") return p.translations?.it || p.it_text || "";
     return p.translations?.[targetLang] || "";
   };
 
-  const getPhraseSourceText = (p: Phrase): string => {
-    const src = (p.source_lang || "pt").toLowerCase();
-    return p.translations?.[src] || p.pt_text || "";
-  };
+  const current = phrases[phrases.length - 1];
+  const sourceLang = (current?.source_lang || "—").toUpperCase();
 
-  const { width } = Dimensions.get("window");
-  const hugeBase = Math.max(36, Math.min(140, width * 0.055));
-  const smallBase = Math.max(14, Math.min(26, width * 0.015));
-  const huge = hugeBase * scale;
-  const small = smallBase * scale;
+  // Build ticker text (concat last 5 phrases in chosen lang, separated)
+  const tickerText = phrases
+    .slice(-5)
+    .map((p) => getPhraseText(p))
+    .filter(Boolean)
+    .join("   •   ") || "In attesa che lo speaker inizi a parlare...";
 
-  const visible = phrases.slice(-6);
-  const current = visible[visible.length - 1];
-  const older = visible.slice(0, -1);
+  // Marquee animation
+  const translateX = useRef(new Animated.Value(0)).current;
+  const animRef = useRef<Animated.CompositeAnimation | null>(null);
+  const [tickerTextWidth, setTickerTextWidth] = useState(0);
+  const [tickerContainerWidth, setTickerContainerWidth] = useState(0);
+
+  useEffect(() => {
+    if (animRef.current) {
+      try { animRef.current.stop(); } catch {}
+      animRef.current = null;
+    }
+    if (!tickerTextWidth || !tickerContainerWidth) return;
+    translateX.setValue(tickerContainerWidth);
+    const distance = tickerContainerWidth + tickerTextWidth;
+    const duration = Math.max(8000, distance * 18); // ~18ms per px
+    animRef.current = Animated.loop(
+      Animated.timing(translateX, {
+        toValue: -tickerTextWidth,
+        duration,
+        useNativeDriver: Platform.OS !== "web",
+        easing: Easing.linear,
+      })
+    );
+    animRef.current.start();
+    return () => {
+      if (animRef.current) {
+        try { animRef.current.stop(); } catch {}
+      }
+    };
+  }, [tickerText, tickerTextWidth, tickerContainerWidth, translateX]);
+
+  const { height } = Dimensions.get("window");
+  const tickerHeight = Math.max(120, Math.min(260, height * 0.22));
+  const tickerFontSize = Math.max(48, Math.min(140, tickerHeight * 0.55)) * scale;
 
   const zoomIn = () => setScaleIndex((i) => Math.min(FONT_SCALES.length - 1, i + 1));
   const zoomOut = () => setScaleIndex((i) => Math.max(0, i - 1));
-  const toggleTheme = () => setTheme((th) => (th === "dark" ? "light" : "dark"));
-  const resetZoom = () => setScaleIndex(DEFAULT_SCALE_INDEX);
+
+  const logoSrc = session?.logo_base64 ? session.logo_base64 : null;
 
   return (
-    <View style={[styles.root, { backgroundColor: t.bg }]} testID="projector-screen">
+    <View style={styles.root} testID="projector-screen">
       <TouchableOpacity activeOpacity={1} style={StyleSheet.absoluteFill} onPress={touchReveal} />
 
+      {/* Always-visible source-language badge top-right */}
+      <View style={styles.srcBadge} pointerEvents="none">
+        <View style={[styles.livePulse, { backgroundColor: wsOk ? "#22C55E" : "#FF3333" }]} />
+        <Text style={styles.srcBadgeTxt} testID="source-lang-badge">
+          INPUT · {sourceLang}  →  {targetLang.toUpperCase()}
+        </Text>
+      </View>
+
+      {/* Top-left caption */}
+      <View style={styles.captionBar} pointerEvents="none">
+        <View style={styles.captionBorder} />
+        <Text style={styles.captionTxt}>TRADUZIONE IN TEMPO REALE</Text>
+      </View>
+
+      {/* Center: logo + speaker name */}
+      <View style={styles.center} pointerEvents="none">
+        {logoSrc ? (
+          <Image
+            source={{ uri: logoSrc }}
+            style={styles.logo}
+            resizeMode="contain"
+            testID="projector-logo"
+          />
+        ) : null}
+        {session?.speaker_name ? (
+          <Text style={styles.speakerName} testID="speaker-name">{session.speaker_name}</Text>
+        ) : null}
+      </View>
+
+      {/* Header controls (reveal on tap) */}
       {showHeader && (
         <View style={[styles.topBar, { pointerEvents: "box-none" }]}>
-          <TouchableOpacity
-            onPress={() => router.replace("/")}
-            style={[styles.exitBtn, { borderColor: t.border, backgroundColor: t.surface }]}
-            testID="projector-exit-btn"
-          >
-            <Text style={[styles.exitTxt, { color: t.text }]}>← ESCI</Text>
+          <TouchableOpacity onPress={() => router.replace("/")} style={styles.exitBtn} testID="projector-exit-btn">
+            <Text style={styles.exitTxt}>← ESCI</Text>
           </TouchableOpacity>
 
           <View style={[styles.langRow, { pointerEvents: "auto" }]}>
@@ -331,13 +339,10 @@ export default function ProjectorScreen() {
                 <TouchableOpacity
                   key={L.code}
                   onPress={() => setTargetLang(L.code)}
-                  style={[
-                    styles.langPill,
-                    { borderColor: active ? t.accent : t.border, backgroundColor: active ? t.accentSoft : t.surface },
-                  ]}
+                  style={[styles.langPill, active && styles.langPillActive]}
                   testID={`lang-pill-${L.code}`}
                 >
-                  <Text style={[styles.langPillTxt, { color: active ? t.accent : t.text }]}>
+                  <Text style={[styles.langPillTxt, active && styles.langPillTxtActive]}>
                     {L.flag} {L.label}
                   </Text>
                 </TouchableOpacity>
@@ -347,195 +352,178 @@ export default function ProjectorScreen() {
 
           <View style={{ flex: 1 }} />
 
-          <View style={[styles.controlsRow, { pointerEvents: "auto" }]}>
-            <TouchableOpacity
-              onPress={zoomOut}
-              style={[styles.ctrlBtn, { borderColor: t.border, backgroundColor: t.surface }]}
-              testID="zoom-out-btn"
-            >
-              <Text style={[styles.ctrlBtnTxt, { color: t.text }]}>A−</Text>
+          <View style={[styles.zoomRow, { pointerEvents: "auto" }]}>
+            <TouchableOpacity onPress={zoomOut} style={styles.zoomBtn} testID="zoom-out-btn">
+              <Text style={styles.zoomBtnTxt}>A−</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              onPress={resetZoom}
-              style={[styles.ctrlBtn, { borderColor: t.border, backgroundColor: t.surface, minWidth: 60 }]}
-              testID="zoom-reset-btn"
-            >
-              <Text style={[styles.ctrlBtnTxt, { color: t.text, fontSize: 11 }]}>
-                {Math.round(scale * 100)}%
-              </Text>
+            <TouchableOpacity onPress={() => setScaleIndex(DEFAULT_SCALE_INDEX)} style={[styles.zoomBtn, { minWidth: 60 }]} testID="zoom-reset-btn">
+              <Text style={[styles.zoomBtnTxt, { fontSize: 11 }]}>{Math.round(scale * 100)}%</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              onPress={zoomIn}
-              style={[styles.ctrlBtn, { borderColor: t.border, backgroundColor: t.surface }]}
-              testID="zoom-in-btn"
-            >
-              <Text style={[styles.ctrlBtnTxt, { color: t.text }]}>A+</Text>
+            <TouchableOpacity onPress={zoomIn} style={styles.zoomBtn} testID="zoom-in-btn">
+              <Text style={styles.zoomBtnTxt}>A+</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              onPress={toggleTheme}
-              style={[styles.ctrlBtn, { borderColor: t.border, backgroundColor: t.surface, minWidth: 44 }]}
-              testID="theme-toggle-btn"
-            >
-              <Text style={[styles.ctrlBtnTxt, { color: t.text }]}>
-                {theme === "dark" ? "☀" : "☾"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={[styles.badge, { backgroundColor: t.accentSoft, borderColor: t.accent }]}>
-            <View style={[styles.livePulse, { backgroundColor: wsOk ? "#22C55E" : t.accent }]} />
-            <Text style={[styles.badgeTxt, { color: t.accent }]}>
-              {wsOk ? "LIVE" : "SYNC"} · {sessionCode}
-            </Text>
           </View>
         </View>
       )}
 
-      <View style={[styles.captionBar, { pointerEvents: "none" }]}>
-        <View style={[styles.captionBorder, { backgroundColor: t.accent }]} />
-        <Text style={[styles.captionTxt, { color: t.muted }]}>
-          TRADUZIONE IN TEMPO REALE · {(phrases[phrases.length - 1]?.source_lang || "AUTO").toUpperCase()} → {targetLang.toUpperCase()}
-        </Text>
+      {/* Bottom ticker (marquee right-to-left) */}
+      <View
+        style={[styles.tickerWrap, { height: tickerHeight }]}
+        onLayout={(e) => setTickerContainerWidth(e.nativeEvent.layout.width)}
+      >
+        <Animated.Text
+          style={[
+            styles.tickerTxt,
+            { fontSize: tickerFontSize, transform: [{ translateX }] },
+          ]}
+          onLayout={(e) => setTickerTextWidth(e.nativeEvent.layout.width)}
+          numberOfLines={1}
+          testID="ticker-text"
+        >
+          {error ? error : tickerText}
+        </Animated.Text>
       </View>
 
-      {error ? (
-        <View style={styles.errorWrap}>
-          <Text style={[styles.errorTitle, { color: t.accent }]}>ERRORE</Text>
-          <Text style={[styles.errorBody, { color: t.text }]}>{error}</Text>
-        </View>
-      ) : phrases.length === 0 ? (
-        <View style={styles.waitWrap}>
-          <Text style={[styles.waitTxt, { fontSize: Math.max(24, huge * 0.4), color: t.muted }]}>
-            In attesa che lo speaker inizi a parlare...
-          </Text>
-          <Text style={[styles.waitSub, { color: t.text }]}>Sessione {sessionCode}</Text>
-        </View>
-      ) : (
-        <ScrollView
-          ref={scrollRef}
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {older.map((p) => {
-            const txt = getPhraseText(p);
-            const srcTxt = getPhraseSourceText(p);
-            return (
-              <View key={p.id} style={[styles.olderBlock, { borderLeftColor: t.border }]}>
-                <Text style={[styles.olderPt, { fontSize: small, color: t.sub }]} numberOfLines={2}>
-                  {srcTxt}
-                </Text>
-                <Text style={[styles.olderIt, { fontSize: huge * 0.42, color: t.text }]}>
-                  {txt || "…"}
-                </Text>
-              </View>
-            );
-          })}
-
-          {current && (
-            <View
-              style={[styles.currentBlock, { borderLeftColor: t.accent }]}
-              testID="current-phrase"
-            >
-              <Text style={[styles.currentPt, { fontSize: small * 1.1, color: t.sub }]}>
-                {getPhraseSourceText(current)}
-              </Text>
-              <Text style={[styles.currentIt, { fontSize: huge, color: t.text }]}>
-                {getPhraseText(current) || "…"}
-              </Text>
-            </View>
-          )}
-          <View style={{ height: 32 }} />
-        </ScrollView>
-      )}
+      {/* Session code + credit */}
+      <View style={styles.footerRow} pointerEvents="none">
+        <Text style={styles.sessionCodeTxt}>Sessione {sessionCode}</Text>
+        <Text style={styles.credit} testID="credit">created by Gianni Bruzzese</Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  topBar: {
+  root: { flex: 1, backgroundColor: "#000000" },
+  srcBadge: {
     position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 10,
+    top: 20,
+    right: 20,
+    zIndex: 20,
     flexDirection: "row",
     alignItems: "center",
-    padding: 20,
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 4,
+    backgroundColor: "rgba(255,51,51,0.12)",
+    borderColor: "#FF3333",
+    borderWidth: 1,
+  },
+  livePulse: { width: 8, height: 8, borderRadius: 4 },
+  srcBadgeTxt: { color: "#FF3333", fontSize: 13, fontWeight: "900", letterSpacing: 2 },
+  captionBar: {
+    position: "absolute",
+    top: 20,
+    left: 20,
+    zIndex: 5,
+    flexDirection: "row",
+    alignItems: "center",
     gap: 12,
+  },
+  captionBorder: { width: 32, height: 2, backgroundColor: "#FF3333" },
+  captionTxt: { color: "#52525B", fontSize: 11, fontWeight: "800", letterSpacing: 3 },
+  topBar: {
+    position: "absolute",
+    top: 56,
+    left: 20,
+    right: 20,
+    zIndex: 15,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
     flexWrap: "wrap",
   },
-  exitBtn: { borderWidth: 1, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 4 },
-  exitTxt: { fontSize: 12, fontWeight: "800", letterSpacing: 2 },
-  langRow: { flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap" },
+  exitBtn: {
+    borderColor: "rgba(255,255,255,0.3)",
+    borderWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 4,
+    backgroundColor: "rgba(0,0,0,0.6)",
+  },
+  exitTxt: { color: "#FFFFFF", fontSize: 12, fontWeight: "800", letterSpacing: 2 },
+  langRow: { flexDirection: "row", gap: 4, flexWrap: "wrap" },
   langPill: {
+    borderColor: "rgba(255,255,255,0.2)",
     borderWidth: 1,
     paddingVertical: 6,
     paddingHorizontal: 10,
     borderRadius: 4,
+    backgroundColor: "rgba(0,0,0,0.6)",
   },
-  langPillTxt: { fontSize: 12, fontWeight: "800", letterSpacing: 1 },
-  controlsRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  ctrlBtn: {
+  langPillActive: { borderColor: "#FF3333", backgroundColor: "rgba(255,51,51,0.2)" },
+  langPillTxt: { color: "#FFFFFF", fontSize: 12, fontWeight: "800", letterSpacing: 1 },
+  langPillTxtActive: { color: "#FF3333" },
+  zoomRow: { flexDirection: "row", gap: 4 },
+  zoomBtn: {
+    borderColor: "rgba(255,255,255,0.2)",
     borderWidth: 1,
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 4,
     minWidth: 44,
     alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.6)",
   },
-  ctrlBtnTxt: { fontSize: 14, fontWeight: "800", letterSpacing: 1 },
-  badge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 4,
-    borderWidth: 1,
-  },
-  livePulse: { width: 8, height: 8, borderRadius: 4 },
-  badgeTxt: { fontSize: 12, fontWeight: "900", letterSpacing: 2 },
-  captionBar: {
+  zoomBtnTxt: { color: "#FFFFFF", fontSize: 14, fontWeight: "800", letterSpacing: 1 },
+  center: {
     position: "absolute",
-    top: 80,
-    left: 48,
-    right: 48,
-    zIndex: 5,
-    flexDirection: "row",
+    top: 0, left: 0, right: 0, bottom: 0,
     alignItems: "center",
-    gap: 12,
+    justifyContent: "center",
+    paddingBottom: 260,
+    paddingHorizontal: 48,
   },
-  captionBorder: { width: 32, height: 2 },
-  captionTxt: { fontSize: 12, fontWeight: "800", letterSpacing: 4 },
-  scroll: { flex: 1, marginTop: 110 },
-  scrollContent: { paddingHorizontal: 48, paddingBottom: 48, gap: 32 },
-  olderBlock: { opacity: 0.35, gap: 6, borderLeftWidth: 1, paddingLeft: 20 },
-  olderPt: {
-    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
-  },
-  olderIt: { fontWeight: "800", letterSpacing: -1 },
-  currentBlock: { gap: 14, borderLeftWidth: 3, paddingLeft: 24, paddingVertical: 8 },
-  currentPt: {
-    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
-  },
-  currentIt: { fontWeight: "900", letterSpacing: -2 },
-  waitWrap: { flex: 1, alignItems: "center", justifyContent: "center", padding: 48 },
-  waitTxt: {
+  logo: { width: "44%", height: "44%", maxWidth: 520, maxHeight: 320, marginBottom: 24 },
+  speakerName: {
+    color: "#FFFFFF",
+    fontSize: 48,
     fontWeight: "900",
     letterSpacing: -1,
     textAlign: "center",
-    maxWidth: 1000,
   },
-  waitSub: {
-    fontSize: 16,
-    letterSpacing: 6,
-    marginTop: 32,
+  tickerWrap: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 52,
+    backgroundColor: "#000000",
+    borderTopWidth: 2,
+    borderBottomWidth: 2,
+    borderColor: "#FF3333",
+    overflow: "hidden",
+    justifyContent: "center",
+  },
+  tickerTxt: {
+    color: "#FFFFFF",
+    fontWeight: "900",
+    letterSpacing: -1,
+    paddingHorizontal: 40,
+    whiteSpace: "nowrap" as any,
+  },
+  footerRow: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    bottom: 16,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    zIndex: 5,
+  },
+  sessionCodeTxt: {
+    color: "#52525B",
+    fontSize: 12,
+    letterSpacing: 4,
     fontWeight: "800",
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
   },
-  errorWrap: { flex: 1, alignItems: "center", justifyContent: "center", padding: 48 },
-  errorTitle: { fontSize: 14, letterSpacing: 6, fontWeight: "900", marginBottom: 16 },
-  errorBody: { fontSize: 28, fontWeight: "700", textAlign: "center" },
+  credit: {
+    color: "#FF3333",
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 1,
+    fontStyle: "italic",
+  },
 });

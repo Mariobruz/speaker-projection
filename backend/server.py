@@ -48,7 +48,14 @@ logger = logging.getLogger(__name__)
 class Session(BaseModel):
     id: str
     code: str
+    speaker_name: str = ""
+    logo_base64: str = ""
     created_at: datetime
+
+
+class SessionUpdate(BaseModel):
+    speaker_name: Optional[str] = None
+    logo_base64: Optional[str] = None
 
 
 class Phrase(BaseModel):
@@ -146,7 +153,10 @@ async def translate_to_lang(text: str, source_lang: str, target_lang: str) -> st
         "You are a professional real-time conference interpreter. "
         f"Translate the user's {source_name} text into natural, fluent {target_name}. "
         f"Output ONLY the {target_name} translation, without any explanation, quotes, or prefix. "
-        "Preserve punctuation and meaning. If the input is gibberish or silence, return an empty string."
+        "Preserve punctuation and meaning. "
+        "CRITICAL: NEVER invent, guess, or make up words. "
+        "If a word is unclear, unintelligible, or missing, replace it with '...' (three dots). "
+        "If the entire input is gibberish or silence, return an empty string."
     )
     async with httpx.AsyncClient(timeout=30.0) as hc:
         resp = await hc.post(
@@ -224,10 +234,46 @@ async def create_session():
     session = Session(
         id=str(uuid.uuid4()),
         code=code,
+        speaker_name="",
+        logo_base64="",
         created_at=datetime.now(timezone.utc),
     )
     await db.sessions.insert_one(session.model_dump())
     return session
+
+
+@api_router.patch("/sessions/{code}", response_model=Session)
+async def update_session(code: str, update: SessionUpdate):
+    doc = await db.sessions.find_one({"code": code.upper()}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    updates: Dict[str, str] = {}
+    if update.speaker_name is not None:
+        updates["speaker_name"] = update.speaker_name.strip()[:80]
+    if update.logo_base64 is not None:
+        # Simple size guard: ~1.5 MB base64 max
+        if len(update.logo_base64) > 2_000_000:
+            raise HTTPException(status_code=413, detail="Logo too large")
+        updates["logo_base64"] = update.logo_base64
+    if updates:
+        await db.sessions.update_one({"code": code.upper()}, {"$set": updates})
+        doc.update(updates)
+
+    # Ensure required defaults
+    doc.setdefault("speaker_name", "")
+    doc.setdefault("logo_base64", "")
+
+    try:
+        # Don't include logo_base64 in broadcast to keep WS light — client will re-fetch
+        payload = {"type": "session_update", "speaker_name": doc.get("speaker_name", "")}
+        if "logo_base64" in updates:
+            payload["logo_updated"] = True
+        await manager.broadcast(code.upper(), payload)
+    except Exception:
+        logger.exception("WS broadcast failed")
+
+    return Session(**doc)
 
 
 @api_router.get("/sessions/{code}", response_model=Session)
@@ -235,6 +281,8 @@ async def get_session(code: str):
     doc = await db.sessions.find_one({"code": code.upper()}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Session not found")
+    doc.setdefault("speaker_name", "")
+    doc.setdefault("logo_base64", "")
     return Session(**doc)
 
 

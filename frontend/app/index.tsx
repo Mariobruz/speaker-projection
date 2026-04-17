@@ -78,7 +78,7 @@ export default function Home() {
             <Text style={styles.title}>Voce</Text>
             <Text style={styles.titleAccent}>Istantanea.</Text>
             <Text style={styles.subtitle}>
-              Parla in portoghese. Proietta la traduzione italiana in diretta.
+              Parla nella tua lingua. La traduzione viene proiettata in diretta.
             </Text>
           </View>
 
