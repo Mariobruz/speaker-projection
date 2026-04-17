@@ -1,0 +1,112 @@
+{
+  "theme_archetype": {
+    "id": 4,
+    "name": "Swiss & High-Contrast",
+    "mode": "Dark",
+    "description": "Objective, rigid, and function-first. High contrast is mandatory to ensure readability on large conference projector screens and clear usability for the speaker on mobile devices in dark or dim event halls."
+  },
+  "colors": {
+    "background": {
+      "primary": "#050505",
+      "secondary": "#0A0A0A",
+      "surface": "#121212",
+      "overlay": "rgba(0, 0, 0, 0.85)"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "muted": "#52525B",
+      "inverse": "#000000"
+    },
+    "accent": {
+      "primary": "#FFFFFF",
+      "danger": "#FF3333",
+      "danger_glow": "rgba(255, 51, 51, 0.2)",
+      "active": "#22C55E",
+      "border": "rgba(255, 255, 255, 0.1)"
+    }
+  },
+  "typography": {
+    "rules": [
+      "NO Inter, Roboto, or Open Sans for headings.",
+      "Headings and Italian Projected Text: Cabinet Grotesk or Outfit (Bold, tight tracking).",
+      "Portuguese Original Text / Transcripts: JetBrains Mono or IBM Plex Mono.",
+      "Mobile App UI Body: Manrope or IBM Plex Sans."
+    ],
+    "scale": {
+      "h1_projection": "text-[8vw] leading-none tracking-tighter font-bold",
+      "h2_speaker": "text-4xl sm:text-5xl font-black tracking-tight",
+      "body_lg": "text-xl sm:text-2xl leading-relaxed",
+      "body_base": "text-base",
+      "mono_caption": "text-sm sm:text-base font-mono tracking-widest uppercase text-zinc-500"
+    }
+  },
+  "spacing_and_layout": {
+    "system": "Tailwind standard. Generous spacing (p-8 to p-12) for mobile controls, extreme padding (p-16 to p-32) for projection to avoid edge distortion.",
+    "patterns": {
+      "projector_view": {
+        "layout": "h-screen w-full flex flex-col justify-between p-12 lg:p-24 overflow-hidden bg-[#050505]",
+        "top_section": "flex-shrink-0 mb-12 border-l-2 border-zinc-800 pl-6",
+        "bottom_section": "flex-grow flex flex-col justify-end"
+      },
+      "speaker_view": {
+        "layout": "min-h-screen bg-[#0A0A0A] flex flex-col",
+        "header": "glassmorphism sticky top-0 z-50 p-6 border-b border-white/10",
+        "transcript_area": "flex-grow p-6 overflow-y-auto space-y-4 pb-40",
+        "control_bento": "fixed bottom-0 left-0 w-full p-6 bg-gradient-to-t from-black via-black/90 to-transparent pt-12"
+      }
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-white text-black font-bold py-4 px-8 hover:bg-zinc-200 transition-colors rounded-none",
+      "record_fab": "w-24 h-24 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-2xl transition-all",
+      "record_fab_active": "w-24 h-24 rounded-full bg-red-600 border border-red-500 flex items-center justify-center shadow-[0_0_40px_rgba(255,51,51,0.4)] animate-pulse"
+    },
+    "surfaces": {
+      "glass_header": "backdrop-blur-xl bg-black/60 border-b border-white/10 saturate-150",
+      "bento_card": "bg-[#121212] border border-white/5 p-6 rounded-2xl"
+    },
+    "data_display": {
+      "waveform": "flex items-center gap-1 h-12 justify-center",
+      "waveform_bar": "w-1 bg-white rounded-full animate-pulse",
+      "waveform_bar_active": "w-1 bg-red-500 rounded-full animate-pulse"
+    }
+  },
+  "motion": {
+    "scrolling": "Use lenis for smooth scrolling on web/projector view.",
+    "text_reveal": "New Italian translation blocks should fade in and slide up slightly (translate-y-4 to 0) to avoid jarring pops on the big screen.",
+    "recording_state": "Pulsing red glow on the mic button and dynamic scaling of waveform bars based on audio input."
+  },
+  "icons": {
+    "library": "lucide-react",
+    "style": "Sharp, technical, no rounded edges if possible. Use standard stroke-width 1.5."
+  },
+  "media": {
+    "hero_abstract_waveform": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/e0bb859e-d9d1-43f7-824c-b3cabe443144/images/0ec48f33d2dc08da8a52c824fdbaf81517bef8ab39b6e984cc6281d388e4bc9e.png",
+      "description": "Abstract minimalist sound wave visualization. Perfect for landing page hero background or session join screen."
+    },
+    "event_projection_bg": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/e0bb859e-d9d1-43f7-824c-b3cabe443144/images/823d456e3c0e6ef0a2c3c6fe972d877af7c25a264aca11c2ac9bf59a9ad3cdce.png",
+      "description": "Massive dark conference stage projector screen. Use for marketing features or 'how it works' section."
+    },
+    "speaker_1": {
+      "url": "https://images.unsplash.com/photo-1600320844745-6de494a914ca?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwzfHxjb25mZXJlbmNlJTIwc3BlYWtlciUyMHN0YWdlJTIwZGFya3xlbnwwfHx8fDE3NzY0MjMxMDF8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Speaker on stage. Good for testimonials or demo screen profile pictures."
+    },
+    "speaker_2": {
+      "url": "https://images.unsplash.com/photo-1591034407491-9ae53007fa95?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxjb25mZXJlbmNlJTIwc3BlYWtlciUyMHN0YWdlJTIwZGFya3xlbnwwfHx8fDE3NzY0MjMxMDF8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Speaker in suit on stage. Use for demo mockups."
+    }
+  },
+  "instructions_to_main_agent": [
+    "This is a dark-theme only application. Do not implement a light theme.",
+    "Use standard React JS and Tailwind CSS. The app needs to support both mobile (speaker view) and desktop (projector view).",
+    "Use Framer Motion to smoothly animate the incoming text on the projector view.",
+    "For the Projector View: Hide scrollbars entirely. Content should auto-scroll smoothly as new text arrives.",
+    "For the Speaker View: The microphone control button must be huge, easily tappable without looking, and clearly indicate LIVE status (Red glow).",
+    "Ensure all text rendering on the projector screen uses font-bold and tracking-tighter for maximum legibility from a distance.",
+    "Implement data-testid attributes on all interactive elements: e.g., data-testid='mic-record-button', data-testid='session-join-button'."
+  ]
+}
