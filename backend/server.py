@@ -56,6 +56,7 @@ class Phrase(BaseModel):
     session_id: str
     pt_text: str
     it_text: str
+    source_lang: str = "pt"
     translations: Dict[str, str] = Field(default_factory=dict)
     created_at: datetime
 
@@ -125,19 +126,26 @@ def generate_code(length: int = 6) -> str:
 
 
 async def translate_pt_to_it(text: str) -> str:
-    return await translate_pt_to_lang(text, "it")
+    return await translate_to_lang(text, "pt", "it")
 
 
 async def translate_pt_to_lang(text: str, target_lang: str) -> str:
+    return await translate_to_lang(text, "pt", target_lang)
+
+
+async def translate_to_lang(text: str, source_lang: str, target_lang: str) -> str:
     if not text.strip():
         return ""
-    lang_name = SUPPORTED_LANGS.get(target_lang, "Italian")
-    if target_lang == "pt":
+    source_lang = (source_lang or "pt").lower()
+    target_lang = (target_lang or "it").lower()
+    if source_lang == target_lang:
         return text.strip()
+    source_name = SUPPORTED_LANGS.get(source_lang, "Portuguese")
+    target_name = SUPPORTED_LANGS.get(target_lang, "Italian")
     system_message = (
         "You are a professional real-time conference interpreter. "
-        f"Translate the user's Portuguese text into natural, fluent {lang_name}. "
-        f"Output ONLY the {lang_name} translation, without any explanation, quotes, or prefix. "
+        f"Translate the user's {source_name} text into natural, fluent {target_name}. "
+        f"Output ONLY the {target_name} translation, without any explanation, quotes, or prefix. "
         "Preserve punctuation and meaning. If the input is gibberish or silence, return an empty string."
     )
     async with httpx.AsyncClient(timeout=30.0) as hc:
@@ -163,15 +171,18 @@ async def translate_pt_to_lang(text: str, target_lang: str) -> str:
     return (data["choices"][0]["message"]["content"] or "").strip()
 
 
-async def groq_transcribe(audio_bytes: bytes, filename: str) -> str:
+async def groq_transcribe(audio_bytes: bytes, filename: str, language: Optional[str] = None) -> tuple[str, str]:
+    """Transcribe audio via Groq Whisper. Returns (text, detected_language).
+    If language is None, auto-detect via verbose_json response."""
     async with httpx.AsyncClient(timeout=60.0) as hc:
         files = {"file": (filename, audio_bytes, "application/octet-stream")}
         form = {
             "model": GROQ_STT_MODEL,
-            "language": "pt",
-            "response_format": "json",
+            "response_format": "verbose_json",
             "temperature": "0.0",
         }
+        if language:
+            form["language"] = language
         resp = await hc.post(
             f"{GROQ_BASE}/audio/transcriptions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
@@ -181,7 +192,15 @@ async def groq_transcribe(audio_bytes: bytes, filename: str) -> str:
         if resp.status_code != 200:
             raise RuntimeError(f"Groq STT error {resp.status_code}: {resp.text}")
         data = resp.json()
-    return (data.get("text") or "").strip()
+    text = (data.get("text") or "").strip()
+    detected = (data.get("language") or language or "pt").lower()
+    # Normalize to ISO-639-1 two-letter code
+    lang_map = {
+        "portuguese": "pt", "italian": "it", "english": "en", "spanish": "es",
+        "french": "fr", "german": "de",
+    }
+    detected = lang_map.get(detected, detected[:2])
+    return text, detected
 
 
 # ---------------- Routes ----------------
@@ -235,23 +254,27 @@ async def transcribe_audio(code: str, audio: UploadFile = File(...)):
         filename = "audio.webm"
 
     try:
-        pt_text = await groq_transcribe(audio_bytes, filename)
+        source_text, source_lang = await groq_transcribe(audio_bytes, filename)
     except Exception as e:
         logger.exception("Groq transcription failed")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
 
-    if not pt_text or len(pt_text) < 2:
+    if not source_text or len(source_text) < 2:
         return TranscribeResponse(skipped=True, reason="Empty transcription")
 
     # Filter out common Whisper hallucinations on silence
-    lowered = pt_text.lower().strip(" .!?,")
+    lowered = source_text.lower().strip(" .!?,")
     noise_patterns = {"obrigado", "obrigada", "muito obrigado", "muito obrigada",
-                      "legendas pela comunidade", "subtitles by the community"}
-    if lowered in noise_patterns and len(pt_text) < 30:
+                      "legendas pela comunidade", "subtitles by the community",
+                      "thank you", "thanks for watching", "grazie", "grazie mille"}
+    if lowered in noise_patterns and len(source_text) < 30:
         return TranscribeResponse(skipped=True, reason="Noise phrase filtered")
 
+    if source_lang not in SUPPORTED_LANGS:
+        source_lang = "pt"
+
     try:
-        it_text = await translate_pt_to_it(pt_text)
+        it_text = await translate_to_lang(source_text, source_lang, "it")
     except Exception as e:
         logger.exception("Translation failed")
         raise HTTPException(status_code=500, detail=f"Translation failed: {e}")
@@ -259,11 +282,14 @@ async def transcribe_audio(code: str, audio: UploadFile = File(...)):
     if not it_text:
         return TranscribeResponse(skipped=True, reason="Empty translation")
 
+    translations = {source_lang: source_text, "it": it_text}
     phrase = Phrase(
         id=str(uuid.uuid4()),
         session_id=session_doc["id"],
-        pt_text=pt_text,
+        pt_text=source_text,
         it_text=it_text,
+        source_lang=source_lang,
+        translations=translations,
         created_at=datetime.now(timezone.utc),
     )
     await db.phrases.insert_one(phrase.model_dump())
@@ -330,11 +356,12 @@ async def translate_phrase(code: str, phrase_id: str, lang: str):
         raise HTTPException(status_code=404, detail="Phrase not found")
 
     translations = phrase_doc.get("translations") or {}
+    source_lang = (phrase_doc.get("source_lang") or "pt").lower()
     # Backfill legacy phrases
     if "it" not in translations and phrase_doc.get("it_text"):
         translations["it"] = phrase_doc["it_text"]
-    if "pt" not in translations and phrase_doc.get("pt_text"):
-        translations["pt"] = phrase_doc["pt_text"]
+    if source_lang not in translations and phrase_doc.get("pt_text"):
+        translations[source_lang] = phrase_doc["pt_text"]
 
     if lang in translations and translations[lang]:
         return TranslationResponse(
@@ -342,7 +369,8 @@ async def translate_phrase(code: str, phrase_id: str, lang: str):
         )
 
     try:
-        text = await translate_pt_to_lang(phrase_doc["pt_text"], lang)
+        src_text = translations.get(source_lang) or phrase_doc.get("pt_text") or ""
+        text = await translate_to_lang(src_text, source_lang, lang)
     except Exception as e:
         logger.exception("Translation failed")
         raise HTTPException(status_code=500, detail=f"Translation failed: {e}")

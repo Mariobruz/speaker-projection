@@ -29,9 +29,11 @@ Web + mobile app for conference/event interpretation. A Portuguese speaker talks
 
 ## Integrations
 - **Groq Cloud** (free tier, OpenAI-compatible)
-  - STT: whisper-large-v3-turbo via /audio/transcriptions
+  - STT: whisper-large-v3-turbo via /audio/transcriptions, **language auto-detect** via `response_format=verbose_json`
   - Chat: llama-3.3-70b-versatile via /chat/completions
 - API key: `GROQ_API_KEY` in /app/backend/.env
+- Source language normalized to ISO-639-1 (pt, en, es, fr, de, it). Unknown languages fallback to `pt`.
+- Translation uses detected source language → target language (dynamic)
 
 ## Permissions
 - iOS: `NSMicrophoneUsageDescription`

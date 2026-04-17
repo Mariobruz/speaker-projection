@@ -17,6 +17,7 @@ type Phrase = {
   session_id: string;
   pt_text: string;
   it_text: string;
+  source_lang?: string;
   translations?: Record<string, string>;
   created_at: string;
 };
@@ -188,8 +189,9 @@ export default function ProjectorScreen() {
   useEffect(() => {
     for (const p of phrases) {
       const translations = p.translations || {};
+      const src = (p.source_lang || "pt").toLowerCase();
+      if (targetLang === src) continue;
       if (targetLang === "it" && p.it_text) continue;
-      if (targetLang === "pt" && p.pt_text) continue;
       if (!translations[targetLang]) {
         requestTranslation(p.id, targetLang);
       }
@@ -282,9 +284,15 @@ export default function ProjectorScreen() {
   }, [sessionCode, appendPhrases]);
 
   const getPhraseText = (p: Phrase): string => {
+    const src = (p.source_lang || "pt").toLowerCase();
     if (targetLang === "it") return p.translations?.it || p.it_text || "";
-    if (targetLang === "pt") return p.translations?.pt || p.pt_text || "";
+    if (targetLang === src) return p.translations?.[src] || p.pt_text || "";
     return p.translations?.[targetLang] || "";
+  };
+
+  const getPhraseSourceText = (p: Phrase): string => {
+    const src = (p.source_lang || "pt").toLowerCase();
+    return p.translations?.[src] || p.pt_text || "";
   };
 
   const { width } = Dimensions.get("window");
@@ -386,7 +394,7 @@ export default function ProjectorScreen() {
       <View style={styles.captionBar} pointerEvents="none">
         <View style={[styles.captionBorder, { backgroundColor: t.accent }]} />
         <Text style={[styles.captionTxt, { color: t.muted }]}>
-          TRADUZIONE IN TEMPO REALE · PT → {targetLang.toUpperCase()}
+          TRADUZIONE IN TEMPO REALE · {(phrases[phrases.length - 1]?.source_lang || "AUTO").toUpperCase()} → {targetLang.toUpperCase()}
         </Text>
       </View>
 
@@ -411,10 +419,11 @@ export default function ProjectorScreen() {
         >
           {older.map((p) => {
             const txt = getPhraseText(p);
+            const srcTxt = getPhraseSourceText(p);
             return (
               <View key={p.id} style={[styles.olderBlock, { borderLeftColor: t.border }]}>
                 <Text style={[styles.olderPt, { fontSize: small, color: t.sub }]} numberOfLines={2}>
-                  {p.pt_text}
+                  {srcTxt}
                 </Text>
                 <Text style={[styles.olderIt, { fontSize: huge * 0.42, color: t.text }]}>
                   {txt || "…"}
@@ -429,7 +438,7 @@ export default function ProjectorScreen() {
               testID="current-phrase"
             >
               <Text style={[styles.currentPt, { fontSize: small * 1.1, color: t.sub }]}>
-                {current.pt_text}
+                {getPhraseSourceText(current)}
               </Text>
               <Text style={[styles.currentIt, { fontSize: huge, color: t.text }]}>
                 {getPhraseText(current) || "…"}
