@@ -31,7 +31,7 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GROQ_STT_MODEL = os.environ.get("GROQ_STT_MODEL", "whisper-large-v3-turbo")
 GROQ_CHAT_MODEL = os.environ.get("GROQ_CHAT_MODEL", "llama-3.1-8b-instant")
-GROQ_BASE = "https://api.groq.com/openai/v1"
+GROQ_BASE = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 
 # Per-session cache of detected source language to skip verbose_json after first chunk
 _SESSION_LANG_CACHE: Dict[str, str] = {}
