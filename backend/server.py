@@ -30,8 +30,11 @@ db = client[os.environ["DB_NAME"]]
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GROQ_STT_MODEL = os.environ.get("GROQ_STT_MODEL", "whisper-large-v3-turbo")
-GROQ_CHAT_MODEL = os.environ.get("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
+GROQ_CHAT_MODEL = os.environ.get("GROQ_CHAT_MODEL", "llama-3.1-8b-instant")
 GROQ_BASE = "https://api.groq.com/openai/v1"
+
+# Per-session cache of detected source language to skip verbose_json after first chunk
+_SESSION_LANG_CACHE: Dict[str, str] = {}
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -171,8 +174,9 @@ async def translate_to_lang(text: str, source_lang: str, target_lang: str) -> st
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": text},
                 ],
-                "temperature": 0.2,
-                "max_tokens": 512,
+                "temperature": 0.1,
+                "top_p": 0.9,
+                "max_tokens": 256,
             },
         )
         if resp.status_code != 200:
@@ -293,7 +297,7 @@ async def transcribe_audio(code: str, audio: UploadFile = File(...)):
         raise HTTPException(status_code=404, detail="Session not found")
 
     audio_bytes = await audio.read()
-    if not audio_bytes or len(audio_bytes) < 2000:
+    if not audio_bytes or len(audio_bytes) < 1500:
         return TranscribeResponse(skipped=True, reason="Audio too short")
 
     # Determine filename with extension for Whisper
@@ -301,8 +305,9 @@ async def transcribe_audio(code: str, audio: UploadFile = File(...)):
     if "." not in filename:
         filename = "audio.webm"
 
+    cached_lang = _SESSION_LANG_CACHE.get(code.upper())
     try:
-        source_text, source_lang = await groq_transcribe(audio_bytes, filename)
+        source_text, source_lang = await groq_transcribe(audio_bytes, filename, language=cached_lang)
     except Exception as e:
         logger.exception("Groq transcription failed")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
@@ -320,6 +325,9 @@ async def transcribe_audio(code: str, audio: UploadFile = File(...)):
 
     if source_lang not in SUPPORTED_LANGS:
         source_lang = "pt"
+
+    # Cache per session for faster subsequent chunks
+    _SESSION_LANG_CACHE[code.upper()] = source_lang
 
     try:
         it_text = await translate_to_lang(source_text, source_lang, "it")

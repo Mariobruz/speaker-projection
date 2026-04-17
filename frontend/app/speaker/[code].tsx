@@ -54,7 +54,7 @@ const storageSet = (k: string, v: string) => {
   }
 };
 
-const CHUNK_MS = 5000;
+const CHUNK_MS = 2500;
 const IS_WEB = Platform.OS === "web";
 
 export default function SpeakerScreen() {
