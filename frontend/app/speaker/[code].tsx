@@ -26,7 +26,31 @@ type Phrase = {
   session_id: string;
   pt_text: string;
   it_text: string;
+  source_lang?: string;
+  translations?: Record<string, string>;
   created_at: string;
+};
+
+type Lang = "it" | "en" | "es" | "fr" | "de" | "pt";
+const LANGS: { code: Lang; label: string; flag: string }[] = [
+  { code: "it", label: "IT", flag: "🇮🇹" },
+  { code: "en", label: "EN", flag: "🇬🇧" },
+  { code: "es", label: "ES", flag: "🇪🇸" },
+  { code: "fr", label: "FR", flag: "🇫🇷" },
+  { code: "de", label: "DE", flag: "🇩🇪" },
+  { code: "pt", label: "PT", flag: "🇵🇹" },
+];
+
+const storageGet = (k: string): string | null => {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    try { return window.localStorage.getItem(k); } catch { return null; }
+  }
+  return null;
+};
+const storageSet = (k: string, v: string) => {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    try { window.localStorage.setItem(k, v); } catch {}
+  }
 };
 
 const CHUNK_MS = 5000;
@@ -58,6 +82,90 @@ export default function SpeakerScreen() {
   const wsRef = useRef<WebSocket | null>(null);
   const wsReconnectRef = useRef<any>(null);
   const [wsOk, setWsOk] = useState(false);
+
+  // Mic device selection (web)
+  const [devices, setDevices] = useState<{ id: string; label: string }[]>([]);
+  const [selectedMicId, setSelectedMicId] = useState<string>(() => storageGet("vi.micId") || "");
+  const [showMicList, setShowMicList] = useState(false);
+
+  // Output language (speaker preview)
+  const [targetLang, setTargetLang] = useState<Lang>(() => {
+    const s = storageGet("vi.speakerLang");
+    if (s && ["it", "en", "es", "fr", "de", "pt"].includes(s)) return s as Lang;
+    return "it";
+  });
+  const translateLoadingRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => { storageSet("vi.speakerLang", targetLang); }, [targetLang]);
+  useEffect(() => { if (selectedMicId) storageSet("vi.micId", selectedMicId); }, [selectedMicId]);
+
+  const refreshDevices = useCallback(async () => {
+    if (!IS_WEB || typeof navigator === "undefined" || !navigator.mediaDevices) return;
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      const inputs = all
+        .filter((d) => d.kind === "audioinput")
+        .map((d, i) => ({ id: d.deviceId, label: d.label || `Microfono ${i + 1}` }));
+      setDevices(inputs);
+      if (selectedMicId && !inputs.some((d) => d.id === selectedMicId)) {
+        setSelectedMicId("");
+      }
+    } catch {}
+  }, [selectedMicId]);
+
+  useEffect(() => {
+    refreshDevices();
+    if (IS_WEB && typeof navigator !== "undefined" && navigator.mediaDevices?.addEventListener) {
+      const h = () => refreshDevices();
+      navigator.mediaDevices.addEventListener("devicechange", h);
+      return () => navigator.mediaDevices.removeEventListener("devicechange", h);
+    }
+  }, [refreshDevices]);
+
+  const requestTranslation = useCallback(async (phraseId: string, lang: Lang) => {
+    const key = `${phraseId}|${lang}`;
+    if (translateLoadingRef.current.has(key)) return;
+    translateLoadingRef.current.add(key);
+    try {
+      const res = await fetch(
+        `${BACKEND_URL}/api/sessions/${sessionCode}/phrases/${phraseId}/translate?lang=${lang}`,
+        { method: "POST" }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.text) {
+        setPhrases((prev) =>
+          prev.map((p) =>
+            p.id === phraseId
+              ? { ...p, translations: { ...(p.translations || {}), [lang]: data.text } }
+              : p
+          )
+        );
+      }
+    } catch {} finally {
+      translateLoadingRef.current.delete(key);
+    }
+  }, [sessionCode]);
+
+  useEffect(() => {
+    for (const p of phrases) {
+      const src = (p.source_lang || "pt").toLowerCase();
+      if (targetLang === src) continue;
+      const t = p.translations || {};
+      if (!t[targetLang]) requestTranslation(p.id, targetLang);
+    }
+  }, [phrases, targetLang, requestTranslation]);
+
+  const getPhraseText = (p: Phrase): string => {
+    const src = (p.source_lang || "pt").toLowerCase();
+    if (targetLang === src) return p.translations?.[src] || p.pt_text || "";
+    if (targetLang === "it") return p.translations?.it || p.it_text || "";
+    return p.translations?.[targetLang] || "";
+  };
+  const getPhraseSourceText = (p: Phrase): string => {
+    const src = (p.source_lang || "pt").toLowerCase();
+    return p.translations?.[src] || p.pt_text || "";
+  };
 
   const projectorUrl =
     typeof window !== "undefined" && window.location
@@ -246,8 +354,13 @@ export default function SpeakerScreen() {
     setError(null);
     try {
       if (IS_WEB) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioConstraints: any = selectedMicId
+          ? { deviceId: { exact: selectedMicId } }
+          : true;
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
         streamRef.current = stream;
+        // After permission granted, refresh device list with actual labels
+        refreshDevices();
         recordingRef.current = true;
         setRecording(true);
         setStatus("In ascolto...");
@@ -357,14 +470,85 @@ export default function SpeakerScreen() {
 
         <View style={styles.transcriptBox}>
           <View style={styles.transcriptHeader}>
-            <Text style={styles.caption}>TRASCRIZIONE</Text>
+            <Text style={styles.caption}>TRASCRIZIONE · OUTPUT {targetLang.toUpperCase()}</Text>
             <TouchableOpacity onPress={clearSession} testID="clear-btn">
               <Text style={styles.clearTxt}>SVUOTA</Text>
             </TouchableOpacity>
           </View>
+
+          {/* Output language pills */}
+          <View style={styles.langRow}>
+            {LANGS.map((L) => {
+              const active = L.code === targetLang;
+              return (
+                <TouchableOpacity
+                  key={L.code}
+                  onPress={() => setTargetLang(L.code)}
+                  style={[styles.langPill, active && styles.langPillActive]}
+                  testID={`speaker-lang-${L.code}`}
+                >
+                  <Text style={[styles.langPillTxt, active && styles.langPillTxtActive]}>
+                    {L.flag} {L.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Mic device selector (web only) */}
+          {IS_WEB && (
+            <View style={styles.micSection}>
+              <TouchableOpacity
+                onPress={async () => {
+                  await refreshDevices();
+                  setShowMicList((v) => !v);
+                }}
+                style={styles.micTrigger}
+                testID="mic-picker-trigger"
+              >
+                <Text style={styles.micTriggerTxt}>
+                  🎙  {selectedMicId
+                    ? devices.find((d) => d.id === selectedMicId)?.label || "Microfono selezionato"
+                    : "Microfono predefinito"}
+                </Text>
+                <Text style={styles.micChevron}>{showMicList ? "▲" : "▼"}</Text>
+              </TouchableOpacity>
+              {showMicList && (
+                <View style={styles.micList} testID="mic-picker-list">
+                  <TouchableOpacity
+                    onPress={() => { setSelectedMicId(""); setShowMicList(false); }}
+                    style={[styles.micItem, !selectedMicId && styles.micItemActive]}
+                    testID="mic-picker-default"
+                  >
+                    <Text style={styles.micItemTxt}>⚙  Microfono predefinito (sistema)</Text>
+                  </TouchableOpacity>
+                  {devices.length === 0 ? (
+                    <Text style={styles.micEmpty}>
+                      Autorizza il microfono una volta (premi il pulsante registra) per vedere qui l&apos;elenco dei dispositivi.
+                    </Text>
+                  ) : (
+                    devices.map((d) => (
+                      <TouchableOpacity
+                        key={d.id}
+                        onPress={() => { setSelectedMicId(d.id); setShowMicList(false); }}
+                        style={[styles.micItem, selectedMicId === d.id && styles.micItemActive]}
+                        testID={`mic-item-${d.id}`}
+                      >
+                        <Text style={styles.micItemTxt} numberOfLines={1}>
+                          {selectedMicId === d.id ? "✓  " : "    "}
+                          {d.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))
+                  )}
+                </View>
+              )}
+            </View>
+          )}
+
           {phrases.length === 0 ? (
             <Text style={styles.empty}>
-              Nessuna frase ancora. Premi il microfono e parla in portoghese.
+              Nessuna frase ancora. Premi il microfono e inizia a parlare.
             </Text>
           ) : (
             phrases
@@ -372,8 +556,10 @@ export default function SpeakerScreen() {
               .reverse()
               .map((p) => (
                 <View key={p.id} style={styles.phrase} testID={`phrase-${p.id}`}>
-                  <Text style={styles.phrasePt}>{p.pt_text}</Text>
-                  <Text style={styles.phraseIt}>{p.it_text}</Text>
+                  <Text style={styles.phrasePt}>
+                    [{(p.source_lang || "pt").toUpperCase()}] {getPhraseSourceText(p)}
+                  </Text>
+                  <Text style={styles.phraseIt}>{getPhraseText(p) || "…"}</Text>
                 </View>
               ))
           )}
@@ -482,6 +668,51 @@ const styles = StyleSheet.create({
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
   },
   phraseIt: { color: "#FFFFFF", fontSize: 17, fontWeight: "700", lineHeight: 24 },
+  langRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  langPill: {
+    borderColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 4,
+    backgroundColor: "rgba(255,255,255,0.02)",
+  },
+  langPillActive: {
+    borderColor: "#FF3333",
+    backgroundColor: "rgba(255,51,51,0.12)",
+  },
+  langPillTxt: { color: "#FFFFFF", fontSize: 12, fontWeight: "800", letterSpacing: 1 },
+  langPillTxtActive: { color: "#FF3333" },
+  micSection: { gap: 6 },
+  micTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    borderRadius: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(255,255,255,0.02)",
+  },
+  micTriggerTxt: { color: "#FFFFFF", fontSize: 13, fontWeight: "700", flex: 1 },
+  micChevron: { color: "#A1A1AA", fontSize: 12 },
+  micList: {
+    borderColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderRadius: 4,
+    backgroundColor: "#0A0A0A",
+    padding: 6,
+    gap: 2,
+  },
+  micItem: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 4 },
+  micItemActive: { backgroundColor: "rgba(255,51,51,0.08)" },
+  micItemTxt: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+  },
+  micEmpty: { color: "#52525B", fontSize: 11, fontStyle: "italic", padding: 8 },
   controls: {
     position: "absolute",
     left: 0,
