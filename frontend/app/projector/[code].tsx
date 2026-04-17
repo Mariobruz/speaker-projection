@@ -315,7 +315,7 @@ export default function ProjectorScreen() {
       <TouchableOpacity activeOpacity={1} style={StyleSheet.absoluteFill} onPress={touchReveal} />
 
       {showHeader && (
-        <View style={styles.topBar} pointerEvents="box-none">
+        <View style={[styles.topBar, { pointerEvents: "box-none" }]}>
           <TouchableOpacity
             onPress={() => router.replace("/")}
             style={[styles.exitBtn, { borderColor: t.border, backgroundColor: t.surface }]}
@@ -324,7 +324,7 @@ export default function ProjectorScreen() {
             <Text style={[styles.exitTxt, { color: t.text }]}>← ESCI</Text>
           </TouchableOpacity>
 
-          <View style={styles.langRow} pointerEvents="auto">
+          <View style={[styles.langRow, { pointerEvents: "auto" }]}>
             {LANGS.map((L) => {
               const active = L.code === targetLang;
               return (
@@ -347,7 +347,7 @@ export default function ProjectorScreen() {
 
           <View style={{ flex: 1 }} />
 
-          <View style={styles.controlsRow} pointerEvents="auto">
+          <View style={[styles.controlsRow, { pointerEvents: "auto" }]}>
             <TouchableOpacity
               onPress={zoomOut}
               style={[styles.ctrlBtn, { borderColor: t.border, backgroundColor: t.surface }]}
@@ -391,7 +391,7 @@ export default function ProjectorScreen() {
         </View>
       )}
 
-      <View style={styles.captionBar} pointerEvents="none">
+      <View style={[styles.captionBar, { pointerEvents: "none" }]}>
         <View style={[styles.captionBorder, { backgroundColor: t.accent }]} />
         <Text style={[styles.captionTxt, { color: t.muted }]}>
           TRADUZIONE IN TEMPO REALE · {(phrases[phrases.length - 1]?.source_lang || "AUTO").toUpperCase()} → {targetLang.toUpperCase()}

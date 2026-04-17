@@ -591,7 +591,7 @@ export default function SpeakerScreen() {
         </View>
       </ScrollView>
 
-      <View style={styles.controls} pointerEvents="box-none">
+      <View style={[styles.controls, { pointerEvents: "box-none" }]}>
         <View style={styles.controlInner}>
           {error && (
             <Text style={styles.errorTxt} testID="speaker-error">{error}</Text>
