@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
+import httpx
 import os
 import io
 import json
@@ -15,8 +16,8 @@ from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Set
 from datetime import datetime, timezone
 
-from emergentintegrations.llm.openai import OpenAISpeechToText
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.openai import OpenAISpeechToText  # noqa: F401 (legacy)
+from emergentintegrations.llm.chat import LlmChat, UserMessage  # noqa: F401 (legacy)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -26,7 +27,11 @@ mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
-EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+GROQ_STT_MODEL = os.environ.get("GROQ_STT_MODEL", "whisper-large-v3-turbo")
+GROQ_CHAT_MODEL = os.environ.get("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
+GROQ_BASE = "https://api.groq.com/openai/v1"
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -117,17 +122,48 @@ async def translate_pt_to_it(text: str) -> str:
         "Output ONLY the Italian translation, without any explanation, quotes, or prefix. "
         "Preserve punctuation and meaning. If the input is gibberish or silence, return an empty string."
     )
-    chat = (
-        LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"translator-{uuid.uuid4()}",
-            system_message=system_message,
+    async with httpx.AsyncClient(timeout=30.0) as hc:
+        resp = await hc.post(
+            f"{GROQ_BASE}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": GROQ_CHAT_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 512,
+            },
         )
-        .with_model("openai", "gpt-4o-mini")
-    )
-    msg = UserMessage(text=text)
-    response = await chat.send_message(msg)
-    return (response or "").strip()
+        if resp.status_code != 200:
+            raise RuntimeError(f"Groq chat error {resp.status_code}: {resp.text}")
+        data = resp.json()
+    return (data["choices"][0]["message"]["content"] or "").strip()
+
+
+async def groq_transcribe(audio_bytes: bytes, filename: str) -> str:
+    async with httpx.AsyncClient(timeout=60.0) as hc:
+        files = {"file": (filename, audio_bytes, "application/octet-stream")}
+        form = {
+            "model": GROQ_STT_MODEL,
+            "language": "pt",
+            "response_format": "json",
+            "temperature": "0.0",
+        }
+        resp = await hc.post(
+            f"{GROQ_BASE}/audio/transcriptions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            data=form,
+            files=files,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"Groq STT error {resp.status_code}: {resp.text}")
+        data = resp.json()
+    return (data.get("text") or "").strip()
 
 
 # ---------------- Routes ----------------
@@ -181,19 +217,9 @@ async def transcribe_audio(code: str, audio: UploadFile = File(...)):
         filename = "audio.webm"
 
     try:
-        stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
-        file_like = io.BytesIO(audio_bytes)
-        file_like.name = filename
-        stt_response = await stt.transcribe(
-            file=file_like,
-            model="whisper-1",
-            response_format="json",
-            language="pt",
-            temperature=0.0,
-        )
-        pt_text = (getattr(stt_response, "text", "") or "").strip()
+        pt_text = await groq_transcribe(audio_bytes, filename)
     except Exception as e:
-        logger.exception("Whisper transcription failed")
+        logger.exception("Groq transcription failed")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
 
     if not pt_text or len(pt_text) < 2:

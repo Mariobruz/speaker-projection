@@ -486,10 +486,7 @@ const styles = StyleSheet.create({
   },
   fabActive: {
     backgroundColor: "#FF3333",
-    shadowColor: "#FF3333",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 24,
+    boxShadow: "0 0 40px rgba(255, 51, 51, 0.6)",
     elevation: 12,
   },
   fabInner: { width: 32, height: 32, borderRadius: 16, backgroundColor: "#000" },
