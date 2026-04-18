@@ -115,3 +115,7 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Test reports (possono contenere dump di env/secrets)
+test_reports/
+*.test_report.json
