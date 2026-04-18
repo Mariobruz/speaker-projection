@@ -119,3 +119,12 @@ credentials.json
 # Test reports (possono contenere dump di env/secrets)
 test_reports/
 *.test_report.json
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
